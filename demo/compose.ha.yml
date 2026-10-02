@@ -1,0 +1,30 @@
+# HA demo: ./ha.sh up   → http://localhost:8090 (load balancer in front of both nodes)
+name: vigil-ha-demo
+services:
+  postgres:
+    image: docker.io/library/postgres:17-alpine
+    environment: {POSTGRES_USER: vigil, POSTGRES_PASSWORD: demo-pg-pw, POSTGRES_DB: vigil}
+  toy:
+    image: docker.io/library/python:3.13-alpine
+    command: ["python", "/toy.py", "9000"]
+    environment: {SERVICES: api, TITLE: "HA demo — toy", TZ: "IST-5:30"}
+    volumes: ["./toy/toy.py:/toy.py:ro"]
+    ports: ["9100:9000"]
+  vigil-a: &node
+    image: vigil:demo   # built once by ./ha.sh (or ./up.sh); two parallel builds can exhaust a small VM
+    environment: {VIGIL_ADVERTISE_URL: "http://vigil-a:8080"}
+    volumes: ["./vigil-ha.yaml:/etc/vigil/vigil.yaml:ro"]
+    ports: ["8091:8080"]
+    depends_on: [postgres, toy]
+    restart: on-failure
+  vigil-b:
+    <<: *node
+    environment: {VIGIL_ADVERTISE_URL: "http://vigil-b:8080"}
+    ports: ["8092:8080"]
+  lb:
+    image: docker.io/library/nginx:alpine
+    environment: {NGINX_ENTRYPOINT_LOCAL_RESOLVERS: "1"}
+    volumes: ["./nginx-ha.conf.template:/etc/nginx/templates/default.conf.template:ro"]
+    ports: ["8090:80"]
+    depends_on: [vigil-a, vigil-b]
+    restart: unless-stopped

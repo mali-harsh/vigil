@@ -6,6 +6,13 @@ Self-hosted uptime monitoring and status page. One binary, one config file, aler
 
 **Status:** Phases 0–3 done (core engine · status page, incidents, maintenance, admin UI · agents, quorum, discovery, self-monitoring, metrics, Helm · Postgres HA · protocol checks, on-call channels, escalation + ack, scoped keys + SSO, subscribers). Not production-ready yet.
 
+## Try everything locally
+
+```bash
+cd demo && ./up.sh      # vigil + agent + fake services + mail inbox, all features on
+```
+Then follow [`demo/README.md`](demo/README.md): 18 scenarios (outages, escalation + ack links, agents, quorum, discovery, maintenance, subscribers, roles, HA failover).
+
 ## Quick start
 
 ```bash

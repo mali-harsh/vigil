@@ -1,0 +1,14 @@
+# Two vigil nodes sharing Postgres. One leads; the other proxies to it.
+server:
+  listen: ":8080"
+  data_dir: /data
+  admin_tokens: ["demo-admin-token-123456"]
+  database: {driver: postgres, url: "postgres://vigil:demo-pg-pw@postgres:5432/vigil?sslmode=disable"}
+  ha: {lease_ttl: 6s}          # crash failover ≈ 6-8s for the demo (default 15s)
+defaults: {interval: 5s, timeout: 3s, fail_threshold: 2, recover_threshold: 2, notify: [slack]}
+notifiers: [{name: slack, type: slack, url: "http://toy:9000/hook/slack"}]
+status_page:
+  title: HA Demo Status
+  components: [{name: Website, monitors: [api]}]
+monitors:
+  - {name: api, type: http, url: "http://toy:9000/svc/api/health"}

@@ -1,0 +1,80 @@
+# vigil local demo.   ./up.sh   →   http://localhost:8080 (vigil)  http://localhost:9000 (break things)  http://localhost:8025 (email)
+name: vigil-demo
+
+networks:
+  public: {}
+  office: {}   # private network: only the agent and the intranet live here
+
+volumes:
+  vigil-data: {}
+
+services:
+  vigil:
+    build: {context: .., dockerfile: Dockerfile}
+    image: vigil:demo
+    ports: ["8080:8080"]
+    volumes:
+      - ./vigil.yaml:/etc/vigil/vigil.yaml:ro
+      - vigil-data:/data
+      - ./export:/export
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock:ro   # Docker discovery
+    user: "0:0"   # demo only: read the container socket without fiddling with groups
+    security_opt: ["label=disable"]   # demo only: SELinux (Podman VM) otherwise blocks the socket
+    sysctls: {net.ipv4.ping_group_range: "0 2147483647"}   # unprivileged ICMP for the ping check
+    networks: [public]
+    depends_on: [toy, mailpit, redis, postgres]
+    restart: unless-stopped
+
+  agent:
+    image: vigil:demo
+    command: ["agent", "-server", "http://vigil:8080"]
+    environment: {VIGIL_AGENT_TOKEN: demo-office-agent-token-0123}
+    networks: [public, office]
+    depends_on: [vigil]
+    restart: unless-stopped
+
+  toy:   # fake services + alert inbox
+    image: docker.io/library/python:3.13-alpine
+    command: ["python", "/toy.py", "9000"]
+    environment: {SERVICES: "api,payments", TZ: "IST-5:30"}
+    volumes: ["./toy/toy.py:/toy.py:ro"]
+    ports: ["9000:9000"]
+    networks: [public]
+
+  intranet:   # on the private network only — vigil itself can't reach it
+    image: docker.io/library/python:3.13-alpine
+    command: ["python", "/toy.py", "9000"]
+    environment: {SERVICES: intranet, TITLE: "office intranet (private network)", TZ: "IST-5:30"}
+    volumes: ["./toy/toy.py:/toy.py:ro"]
+    ports: ["9001:9000"]   # exposed to YOUR browser so you can break it; vigil still can't reach it
+    networks: [office]
+
+  cron:   # a "nightly job" that pings vigil's heartbeat endpoint
+    image: docker.io/curlimages/curl:8.11.1
+    entrypoint: ["sh", "-c", "while true; do curl -fsS --retry 3 -o /dev/null http://vigil:8080/push/demo-cron-push-token-0123 && echo ping; sleep 20; done"]
+    networks: [public]
+    depends_on: [vigil]
+
+  mailpit:   # catches every email (alerts + subscriber mail) — web UI on :8025
+    image: docker.io/axllent/mailpit:latest
+    ports: ["8025:8025"]
+    networks: [public]
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    command: ["redis-server", "--requirepass", "demo-redis-pw"]
+    networks: [public]
+
+  postgres:
+    image: docker.io/library/postgres:17-alpine
+    environment: {POSTGRES_USER: vigil, POSTGRES_PASSWORD: demo-pg-pw, POSTGRES_DB: app}
+    networks: [public]
+
+  whoami:   # discovered automatically from its labels — not in vigil.yaml
+    image: docker.io/traefik/whoami:latest
+    labels:
+      vigil.enable: "true"
+      vigil.name: whoami
+      vigil.url: http://whoami:80/
+      vigil.interval: 15s
+    networks: [public]

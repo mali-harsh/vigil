@@ -175,16 +175,19 @@ func (a *Authn) trusted(remote string) bool {
 	return false
 }
 
+// role: an exact email entry wins over "*@domain" (so one person can be
+// restricted below their domain's role); among wildcards the highest wins.
 func (a *Authn) role(email string) string {
-	best := ""
+	wild := ""
 	for _, u := range a.users {
-		match := strings.EqualFold(u.Email, email) ||
-			(strings.HasPrefix(u.Email, "*@") && strings.HasSuffix(email, strings.ToLower(u.Email[1:])))
-		if match && rank(u.Role) > rank(best) {
-			best = u.Role
+		if strings.EqualFold(u.Email, email) {
+			return u.Role
+		}
+		if strings.HasPrefix(u.Email, "*@") && strings.HasSuffix(email, strings.ToLower(u.Email[1:])) && rank(u.Role) > rank(wild) {
+			wild = u.Role
 		}
 	}
-	return best
+	return wild
 }
 
 func rank(role string) int { return map[string]int{"viewer": 1, "responder": 2, "admin": 3}[role] }

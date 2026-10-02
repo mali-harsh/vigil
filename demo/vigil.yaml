@@ -1,0 +1,92 @@
+# vigil demo config — every feature switched on, fast timings so you see
+# reactions in seconds. Secrets are plain here because this is a local demo;
+# in real deployments use ${ENV} references.
+server:
+  listen: ":8080"
+  data_dir: /data
+  public_url: http://localhost:8080
+  ack_secret: "demo-ack-secret-0123456789abcdef0123"
+  api_keys:
+    - {name: demo-admin, token: "demo-admin-token-123456", scopes: [admin]}
+    - {name: grafana,    token: "demo-read-token-1234567", scopes: [read]}
+    - {name: deploy-bot, token: "demo-bot-token-12345678", scopes: [incidents:write]}
+  auth:
+    # Simulated SSO: lets you try roles with curl -H "X-Demo-User: you@demo.test".
+    # 0.0.0.0/0 means "trust anyone" — DEMO ONLY, never do this in production.
+    header: X-Demo-User
+    trusted_proxies: [0.0.0.0/0]
+    users:
+      - {email: admin@demo.test,  role: admin}
+      - {email: "*@demo.test",    role: responder}
+      - {email: viewer@demo.test, role: viewer}
+  smtp: {host: mailpit, port: 1025, from: "Demo Status <status@demo.test>", security: none}
+  heartbeat: {url: "http://toy:9000/ping/vigil-deadman", interval: 15s}
+
+defaults:
+  interval: 10s
+  timeout: 4s
+  fail_threshold: 2      # 2 failures in a row (~20s) → DOWN
+  recover_threshold: 2
+  reminder_every: 2m
+  notify: [slack]
+
+notifiers:
+  - {name: slack,  type: slack,   url: "http://toy:9000/hook/slack"}
+  - {name: oncall, type: webhook, url: "http://toy:9000/hook/oncall"}
+  - {name: teams,  type: teams,   url: "http://toy:9000/hook/teams"}
+  - {name: oncall-email, type: email, to: [oncall@demo.test]}
+
+escalations:
+  - name: prod
+    steps:
+      - notify: [slack]
+      - {after: 45s, notify: [oncall, oncall-email]}   # unacknowledged 45s → page on-call
+
+agents:
+  - {name: office, token: "demo-office-agent-token-0123"}
+
+discovery:
+  docker: {enabled: true, interval: 15s}
+
+status_page:
+  title: Demo Status
+  description: Break things at http://localhost:9000 and watch this page
+  timezone: Asia/Kolkata
+  subscribe: true
+  export_dir: /export
+  components:
+    - {name: Website, description: "api · escalation policy", monitors: [api]}
+    - name: Payments
+      components:
+        - {name: Checkout, monitors: [payments]}
+        - {name: Payment API (JSON), monitors: [payments-json]}
+    - {name: Cache, monitors: [redis]}
+    - {name: Database, monitors: [postgres]}
+    - {name: Email, monitors: [smtp]}
+    - {name: Office intranet, description: "only reachable by the agent", monitors: [intranet]}
+    - {name: Nightly jobs, description: "cron heartbeat", monitors: [cron]}
+
+maintenance:
+  # Edit start (or run ./maintenance-now.sh) to see a live window.
+  - name: Database upgrade
+    description: Writes may be briefly unavailable.
+    start: "2030-01-01T02:00:00+05:30"   # maint-start (./maintenance-now.sh rewrites this line)
+    duration: 10m
+    components: [database]
+
+monitors:
+  - {name: api, type: http, url: "http://toy:9000/svc/api/health", escalation: prod,
+     expect: {body_contains: healthy, max_latency: 1500ms}}
+  - {name: payments, type: http, url: "http://toy:9000/svc/payments/health", notify: [slack, teams]}
+  - {name: payments-json, type: http, url: "http://toy:9000/svc/payments/json",
+     expect: {json: [{path: status, equals: ok}]}}
+  - {name: api-2-locations, type: http, url: "http://toy:9000/svc/api/health",
+     locations: [local, office], quorum: 2}
+  - {name: redis, type: redis, host: "redis:6379", password: "demo-redis-pw"}
+  - {name: postgres, type: postgres, url: "postgres://vigil:demo-pg-pw@postgres:5432/app?sslmode=disable"}
+  - {name: smtp, type: smtp, host: "mailpit:1025"}
+  - {name: intranet, type: http, url: "http://intranet:9000/svc/intranet/health", locations: [office]}
+  - {name: cron, type: push, token: "demo-cron-push-token-0123", interval: 30s, grace: 15s}
+  - {name: github-cert, type: tls, host: "github.com:443", interval: 1h, expect: {cert_min_days: 7}}
+  - {name: cloudflare-dns, type: dns, host: cloudflare.com, interval: 1m}
+  - {name: ping-1.1.1.1, type: icmp, host: 1.1.1.1, interval: 30s}

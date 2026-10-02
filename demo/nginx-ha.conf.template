@@ -1,0 +1,23 @@
+# Load balancer in front of every vigil node (standbys proxy to the leader, so
+# any node can answer). `resolve` re-resolves node names: a restarted container
+# usually comes back with a new IP. NGINX_LOCAL_RESOLVERS comes from the image's
+# entrypoint (NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1) — the container's DNS server.
+resolver ${NGINX_LOCAL_RESOLVERS} valid=2s ipv6=off;
+
+upstream vigil {
+  zone vigil 64k;
+  server vigil-a:8080 resolve max_fails=1 fail_timeout=2s;
+  server vigil-b:8080 resolve max_fails=1 fail_timeout=2s;
+}
+
+server {
+  listen 80;
+  location / {
+    proxy_pass http://vigil;
+    proxy_next_upstream error timeout http_502;   # a dead node → try the other
+    proxy_connect_timeout 1s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    add_header X-Served-By $upstream_addr always;
+  }
+}
