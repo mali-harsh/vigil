@@ -50,6 +50,8 @@ type Server struct {
 	AdminTokens []string  `yaml:"admin_tokens"` // admin UI + write API; empty = admin disabled
 	Retention   Duration  `yaml:"retention"`    // raw check results
 	Heartbeat   Heartbeat `yaml:"heartbeat"`    // dead-man's switch: vigil pings this while healthy
+	Database    Database  `yaml:"database"`
+	HA          HA        `yaml:"ha"`
 	TLS         TLS       `yaml:"tls"`
 }
 
@@ -117,6 +119,22 @@ type Agent struct {
 	Name   string   `yaml:"name"`
 	Token  string   `yaml:"token"`
 	Notify []string `yaml:"notify"` // who hears "agent offline"; default: defaults.notify
+}
+
+// Database selects the store. sqlite (default) lives in data_dir; postgres
+// lets several vigil servers share state and fail over (see HA).
+type Database struct {
+	Driver string `yaml:"driver"` // sqlite | postgres
+	URL    string `yaml:"url"`    // postgres://user:pass@host/db?sslmode=require
+}
+
+// HA tunes leader election (postgres only). Failover after a crash takes
+// about LeaseTTL + LeaseTTL/3; a graceful restart hands over immediately.
+type HA struct {
+	LeaseTTL Duration `yaml:"lease_ttl"` // default 15s
+	// AdvertiseURL is how other nodes reach this one (standbys proxy to the
+	// leader). Default: env VIGIL_ADVERTISE_URL, else http://<primary IP>:<port>.
+	AdvertiseURL string `yaml:"advertise_url"`
 }
 
 type Heartbeat struct {
@@ -226,6 +244,12 @@ func (c *Config) applyDefaults() {
 		s.Retention = Duration(30 * 24 * time.Hour)
 	}
 	c.applyStatusPageDefaults()
+	if c.Server.Database.Driver == "" {
+		c.Server.Database.Driver = "sqlite"
+	}
+	if c.Server.HA.LeaseTTL == 0 {
+		c.Server.HA.LeaseTTL = Duration(15 * time.Second)
+	}
 	if c.Server.Heartbeat.URL != "" && c.Server.Heartbeat.Interval == 0 {
 		c.Server.Heartbeat.Interval = Duration(time.Minute)
 	}
@@ -314,6 +338,21 @@ func (c *Config) validate() error {
 				errs = append(errs, fmt.Errorf("agents %q and %q share a token", a.Name, b.Name))
 			}
 		}
+	}
+	switch db := c.Server.Database; db.Driver {
+	case "sqlite":
+		if db.URL != "" {
+			errs = append(errs, errors.New("server.database.url: only for postgres (sqlite lives in data_dir)"))
+		}
+	case "postgres":
+		if !strings.HasPrefix(db.URL, "postgres://") && !strings.HasPrefix(db.URL, "postgresql://") {
+			errs = append(errs, errors.New("server.database.url: postgres://... URL required"))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("server.database.driver: %q (sqlite or postgres)", db.Driver))
+	}
+	if ttl := c.Server.HA.LeaseTTL.D(); ttl < 3*time.Second {
+		errs = append(errs, errors.New("server.ha.lease_ttl: must be >= 3s"))
 	}
 	if hb := c.Server.Heartbeat; hb.URL != "" && !isURL(hb.URL) {
 		errs = append(errs, errors.New("server.heartbeat.url: invalid url"))

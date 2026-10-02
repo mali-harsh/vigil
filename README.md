@@ -4,7 +4,7 @@ Self-hosted uptime monitoring and status page. One binary, one config file, aler
 
 > Uptime Kuma's simplicity + Gatus's config-as-code + Instatus's status page + agents for private infrastructure.
 
-**Status:** Phases 0–2 done (core engine · status page, incidents, maintenance, admin UI · agents, multi-location quorum, discovery, self-monitoring, metrics, Helm). Not production-ready yet.
+**Status:** Phases 0–2b done (core engine · status page, incidents, maintenance, admin UI · agents, multi-location quorum, discovery, self-monitoring, metrics, Helm · Postgres + HA failover). Not production-ready yet.
 
 ## Quick start
 
@@ -97,6 +97,29 @@ vigil.interval: 30s                     vigil.dev/interval: 30s
 ```
 Keys: `enable, name, type, url, host, path (k8s), interval, timeout, expect-status, body-contains, max-latency, notify, locations`. A **stopped** container stays monitored (so it alerts); a deleted one is removed and its incident closed.
 
+## High availability (Postgres)
+
+Run two or more servers against one Postgres. Exactly one — the **leader** — probes, alerts and writes; the others stand by and **proxy every request to the leader**, so a load balancer can simply include all nodes.
+
+```yaml
+server:
+  database: {driver: postgres, url: "${DATABASE_URL}"}   # postgres://user:pass@host/db?sslmode=require
+  ha: {lease_ttl: 15s}
+```
+
+- **Election** is a lease row in Postgres (works through PgBouncer / RDS Proxy / Cloud SQL proxy, unlike advisory locks). All expiry checks use the database clock, so node clock skew doesn't matter; an epoch fences stale leaders.
+- **No split brain:** the leader steps down if it can't renew for ⅔·TTL; a standby may take over only after the full TTL has expired — the old leader is always stopped ≥ TTL/3 before the new one starts, even when partitioned.
+- **Failover:** crash → ~TTL + TTL/3 (≈20 s at 15 s); graceful restart/rollout → ~TTL/3, because the lease is released on shutdown. The new leader rebuilds state from the database — same incident, no duplicate alert (tested with `kill -9` mid-outage).
+- **Database down:** the leader steps down rather than act without state; when Postgres returns, exactly one node leads again. Keep the static export + external heartbeat for that case.
+- `/healthz` is 200 on every healthy node; `/readyz` is 200 only on the leader; `vigil_leader{node}` in `/metrics`.
+- Standbys reach the leader at its `ha.advertise_url` (default: `VIGIL_ADVERTISE_URL`, else `http://<bound or primary IP>:<port>`). The Helm chart sets it to the pod IP.
+- During the failover gap requests get `502/503 + Retry-After` — make cron heartbeats retry: `curl -fsS --retry 3 --retry-delay 5 https://status.example.com/push/<token>`. Agents buffer and retry on their own.
+- Terminate TLS at your load balancer for HA (built-in Let's Encrypt is per node).
+
+```bash
+helm install vigil deploy/helm/vigil --set ha.enabled=true --set existingSecret=vigil-secrets -f values.yaml
+```
+
 ## Metrics
 
 `GET /metrics` (Prometheus text, behind `api_tokens` if set): `vigil_monitor_up`, `vigil_monitor_state`, `vigil_check_latency_seconds{location}`, `vigil_check_results_total`, `vigil_agent_up`, `vigil_notifications_total{result=sent|failed|dropped}`, `vigil_heartbeat_pings_total`, `vigil_incidents_open`, `vigil_build_info`.
@@ -172,7 +195,7 @@ Read endpoints need `Authorization: Bearer <api or admin token>` when `server.ap
 - **Phase 0 — core** ✅ scheduler, checks, state machine, incidents, Slack/webhook, SQLite, API, YAML
 - **Phase 1 — status page** ✅ components & groups, 90-day bars, incident updates, maintenance windows, auto-HTTPS, static export, badges, admin UI
 - **Phase 2 — everywhere** ✅ agents (private + multi-region quorum), Docker & Kubernetes discovery, dead-man's heartbeat + engine liveness, Prometheus `/metrics`, Helm chart, compose, systemd, CI/release
-- **Phase 2b — HA** Postgres store + leader election (two servers, automatic failover)
+- **Phase 2b — HA** ✅ Postgres backend (whole test suite runs on both), lease-based leader election with fencing, proxying standbys, Helm HA mode (PDB, anti-affinity)
 - **Phase 3 — teams** subscribers, escalation/on-call, RBAC & scoped keys, more checks (Postgres/Redis/Kafka/gRPC/ICMP), Terraform provider
 
 ## Layout
@@ -186,7 +209,8 @@ internal/scheduler per-monitor loops, heartbeat watchers
 internal/engine    single writer: results → state → incidents → notifications
 internal/maintenance  pure window math (one-off/daily/weekly, DST-safe)
 internal/statuspage   public model, HTML/JSON/badge rendering, static export
-internal/store     SQLite persistence, versioned migrations, daily rollups
+internal/store     SQLite / Postgres persistence, versioned migrations, daily rollups, leader lease
+internal/ha        leader election (lease renew / step-down / handover)
 internal/notify    Slack / webhook senders, async retrying dispatcher
 internal/api       public + read/write API, agent API, metrics, push endpoint, admin UI
 internal/agent     agent client: poll assignments, run probes, batch + retry results
@@ -197,7 +221,9 @@ internal/metrics   dependency-free Prometheus text exposition
 ## Development
 
 ```bash
-go test -race ./...
+go test -race ./...                                            # SQLite
+VIGIL_TEST_POSTGRES='postgres://user:pw@localhost:5432/postgres?sslmode=disable' \
+  go test -race ./...                                          # everything again on Postgres + HA tests
 ```
 
 MIT licensed.

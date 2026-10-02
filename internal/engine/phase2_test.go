@@ -15,6 +15,7 @@ import (
 	"github.com/mali-harsh/vigil/internal/notify"
 	"github.com/mali-harsh/vigil/internal/scheduler"
 	"github.com/mali-harsh/vigil/internal/store"
+	"github.com/mali-harsh/vigil/internal/store/storetest"
 )
 
 func TestDerive(t *testing.T) {
@@ -51,10 +52,7 @@ type manual struct {
 func startManual(t *testing.T, cfg *config.Config, agentTimeout time.Duration) *manual {
 	t.Helper()
 	cfg.Server.Retention = config.Duration(time.Hour)
-	st, err := store.Open(filepath.Join(t.TempDir(), "v.db"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := storetest.OpenAt(t, filepath.Join(t.TempDir(), "v.db"))
 	ctx, cancel := context.WithCancel(context.Background())
 	rec := &recorder{}
 	in := make(chan check.Result, 64)

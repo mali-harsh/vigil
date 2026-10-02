@@ -1,8 +1,13 @@
-// Package store persists results, monitor state and incidents in SQLite.
+// Package store persists results, monitor state and incidents.
 //
-// SQLite (WAL mode, pure-Go driver, no CGO) keeps the default deployment to a
-// single binary + single file. A Postgres implementation can satisfy the same
-// methods later for HA.
+// Two backends share one implementation:
+//   - SQLite (default): WAL mode, pure-Go driver, no CGO — a single binary and
+//     a single file.
+//   - Postgres: for HA, several vigil servers share one database and elect a
+//     leader through a lease row (see lease.go).
+//
+// Queries are written once with "?" placeholders and portable SQL; q() rebinds
+// them to $n for Postgres.
 package store
 
 import (
@@ -21,11 +26,33 @@ import (
 type Store struct {
 	db  *sql.DB
 	loc *time.Location // day boundaries for daily rollups
+	pg  bool
 }
+
+// q rebinds "?" placeholders for Postgres. Queries never contain a literal "?".
+func (s *Store) q(query string) string {
+	if !s.pg {
+		return query
+	}
+	var b strings.Builder
+	n := 0
+	for _, r := range query {
+		if r == '?' {
+			n++
+			fmt.Fprintf(&b, "$%d", n)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// Postgres reports whether this store is shared (HA-capable).
+func (s *Store) Postgres() bool { return s.pg }
 
 // migrations run in order inside a transaction; PRAGMA user_version records
 // how many have been applied. Never edit a released migration — append.
-var migrations = []string{
+var migrations = []string{ // SQLite
 	// 1: phase 0 schema (IF NOT EXISTS: phase 0 DBs predate user_version)
 	`CREATE TABLE IF NOT EXISTS monitor_state (
 		monitor_id TEXT PRIMARY KEY,
@@ -82,6 +109,7 @@ var migrations = []string{
 	UPDATE results SET eff = status;`,
 }
 
+// Open opens (creating if needed) the SQLite database at path.
 func Open(path string, loc *time.Location) (*Store, error) {
 	if loc == nil {
 		loc = time.UTC
@@ -129,7 +157,13 @@ func migrate(db *sql.DB) error {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-func ms(t time.Time) int64     { return t.UnixMilli() }
+func ms(t time.Time) int64 { return t.UnixMilli() }
+func boolInt(c bool) int {
+	if c {
+		return 1
+	}
+	return 0
+}
 func fromMS(v int64) time.Time { return time.UnixMilli(v).UTC() }
 
 // Day is the rollup key for t in the store's timezone.
@@ -141,7 +175,7 @@ type StateRow struct {
 }
 
 func (s *Store) LoadStates(ctx context.Context) (map[string]StateRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT monitor_id, state, since FROM monitor_state`)
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT monitor_id, state, since FROM monitor_state`))
 	if err != nil {
 		return nil, err
 	}
@@ -159,8 +193,8 @@ func (s *Store) LoadStates(ctx context.Context) (map[string]StateRow, error) {
 }
 
 func (s *Store) SaveState(ctx context.Context, id string, st monitor.State, since time.Time) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO monitor_state(monitor_id, state, since) VALUES(?,?,?)
-		ON CONFLICT(monitor_id) DO UPDATE SET state=excluded.state, since=excluded.since`, id, st, ms(since))
+	_, err := s.db.ExecContext(ctx, s.q(`INSERT INTO monitor_state(monitor_id, state, since) VALUES(?,?,?)
+		ON CONFLICT(monitor_id) DO UPDATE SET state=excluded.state, since=excluded.since`), id, st, ms(since))
 	return err
 }
 
@@ -180,28 +214,22 @@ func (s *Store) InsertResult(ctx context.Context, r check.Result, eff check.Stat
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO results(monitor_id, at, status, latency_ms, message, maint, location, eff) VALUES(?,?,?,?,?,?,?,?)`,
-		r.MonitorID, ms(r.At), r.Status, r.Latency.Milliseconds(), r.Message, maint, r.Location, eff); err != nil {
+	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO results(monitor_id, at, status, latency_ms, message, maint, location, eff) VALUES(?,?,?,?,?,?,?,?)`),
+		r.MonitorID, ms(r.At), r.Status, r.Latency.Milliseconds(), r.Message, boolInt(maint), r.Location, eff); err != nil {
 		return err
 	}
-	b := func(c bool) int {
-		if c {
-			return 1
-		}
-		return 0
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO daily(monitor_id, day, total, down, degraded, maint) VALUES(?,?,1,?,?,?)
-		ON CONFLICT(monitor_id, day) DO UPDATE SET total=total+1, down=down+excluded.down,
-		degraded=degraded+excluded.degraded, maint=maint+excluded.maint`,
-		r.MonitorID, s.Day(r.At), b(!maint && eff == check.Down), b(!maint && eff == check.Degraded), b(maint)); err != nil {
+	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO daily(monitor_id, day, total, down, degraded, maint) VALUES(?,?,1,?,?,?)
+		ON CONFLICT(monitor_id, day) DO UPDATE SET total=daily.total+1, down=daily.down+excluded.down,
+		degraded=daily.degraded+excluded.degraded, maint=daily.maint+excluded.maint`),
+		r.MonitorID, s.Day(r.At), boolInt(!maint && eff == check.Down), boolInt(!maint && eff == check.Degraded), boolInt(maint)); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 func (s *Store) Results(ctx context.Context, id string, since time.Time, limit int) ([]check.Result, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT at, status, latency_ms, message, location FROM results
-		WHERE monitor_id=? AND at>=? ORDER BY at DESC LIMIT ?`, id, ms(since), limit)
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT at, status, latency_ms, message, location FROM results
+		WHERE monitor_id=? AND at>=? ORDER BY at DESC LIMIT ?`), id, ms(since), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -224,8 +252,8 @@ func (s *Store) Results(ctx context.Context, id string, since time.Time, limit i
 // data — never report 100% for a monitor that has not run.
 func (s *Store) Uptime(ctx context.Context, id string, since time.Time) (pct float64, ok bool, err error) {
 	var total, good int64
-	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(eff!='down'),0) FROM results
-		WHERE monitor_id=? AND at>=? AND maint=0`, id, ms(since)).Scan(&total, &good)
+	err = s.db.QueryRowContext(ctx, s.q(`SELECT COUNT(*), COALESCE(SUM(CASE WHEN eff<>'down' THEN 1 ELSE 0 END),0) FROM results
+		WHERE monitor_id=? AND at>=? AND maint=0`), id, ms(since)).Scan(&total, &good)
 	if err != nil || total == 0 {
 		return 0, false, err
 	}
@@ -236,7 +264,7 @@ func (s *Store) Uptime(ctx context.Context, id string, since time.Time) (pct flo
 // none) — used to resume heartbeat deadlines across restarts.
 func (s *Store) LastUp(ctx context.Context, id string) (time.Time, error) {
 	var at sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT MAX(at) FROM results WHERE monitor_id=? AND status='up'`, id).Scan(&at)
+	err := s.db.QueryRowContext(ctx, s.q(`SELECT MAX(at) FROM results WHERE monitor_id=? AND status='up'`), id).Scan(&at)
 	if err != nil || !at.Valid {
 		return time.Time{}, err
 	}
@@ -261,8 +289,8 @@ func (s *Store) Daily(ctx context.Context, ids []string, fromDay string) (map[st
 	for _, id := range ids {
 		args = append(args, id)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT monitor_id, day, total, down, degraded, maint FROM daily
-		WHERE day>=? AND monitor_id IN (?`+strings.Repeat(",?", len(ids)-1)+`)`, args...)
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT monitor_id, day, total, down, degraded, maint FROM daily
+		WHERE day>=? AND monitor_id IN (?`+strings.Repeat(",?", len(ids)-1)+`)`), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +310,7 @@ func (s *Store) Daily(ctx context.Context, ids []string, fromDay string) (map[st
 }
 
 func (s *Store) Prune(ctx context.Context, before time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM results WHERE at<?`, ms(before))
+	res, err := s.db.ExecContext(ctx, s.q(`DELETE FROM results WHERE at<?`), ms(before))
 	if err != nil {
 		return 0, err
 	}
@@ -355,13 +383,12 @@ func (s *Store) OpenIncident(ctx context.Context, n NewIncident) (int64, error) 
 		return 0, err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `INSERT INTO incidents(monitor_id, started_at, cause, last_notified_at, title, status, impact, components)
-		VALUES(?,?,?,?,?,?,?,?)`, n.MonitorID, ms(n.At), n.Cause, ms(n.At), n.Title, Investigating, n.Impact, strings.Join(n.Components, ","))
-	if err != nil {
+	var id int64 // RETURNING works on both SQLite (3.35+) and Postgres; LastInsertId doesn't
+	if err := tx.QueryRowContext(ctx, s.q(`INSERT INTO incidents(monitor_id, started_at, cause, last_notified_at, title, status, impact, components)
+		VALUES(?,?,?,?,?,?,?,?) RETURNING id`), n.MonitorID, ms(n.At), n.Cause, ms(n.At), n.Title, Investigating, n.Impact, strings.Join(n.Components, ",")).Scan(&id); err != nil {
 		return 0, err
 	}
-	id, _ := res.LastInsertId()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO incident_updates(incident_id, at, status, message) VALUES(?,?,?,?)`,
+	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO incident_updates(incident_id, at, status, message) VALUES(?,?,?,?)`),
 		id, ms(n.At), Investigating, n.Message); err != nil {
 		return 0, err
 	}
@@ -377,7 +404,7 @@ func (s *Store) AddUpdate(ctx context.Context, incID int64, at time.Time, status
 	}
 	defer tx.Rollback()
 	var resolved sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT resolved_at FROM incidents WHERE id=?`, incID).Scan(&resolved); err != nil {
+	if err := tx.QueryRowContext(ctx, s.q(`SELECT resolved_at FROM incidents WHERE id=?`), incID).Scan(&resolved); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -386,7 +413,7 @@ func (s *Store) AddUpdate(ctx context.Context, incID int64, at time.Time, status
 	if resolved.Valid {
 		return ErrResolved
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO incident_updates(incident_id, at, status, message) VALUES(?,?,?,?)`,
+	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO incident_updates(incident_id, at, status, message) VALUES(?,?,?,?)`),
 		incID, ms(at), status, message); err != nil {
 		return err
 	}
@@ -397,7 +424,7 @@ func (s *Store) AddUpdate(ctx context.Context, incID int64, at time.Time, status
 	if title != "" {
 		q, args = q+`, title=?`, append(args, title)
 	}
-	if _, err := tx.ExecContext(ctx, q+` WHERE id=?`, append(args, incID)...); err != nil {
+	if _, err := tx.ExecContext(ctx, s.q(q+` WHERE id=?`), append(args, incID)...); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -423,7 +450,7 @@ func (s *Store) ResolveIncident(ctx context.Context, monitorID string, at time.T
 }
 
 func (s *Store) TouchIncident(ctx context.Context, incID int64, at time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE incidents SET last_notified_at=? WHERE id=?`, ms(at), incID)
+	_, err := s.db.ExecContext(ctx, s.q(`UPDATE incidents SET last_notified_at=? WHERE id=?`), ms(at), incID)
 	return err
 }
 
@@ -465,7 +492,7 @@ func (s *Store) IncidentsSince(ctx context.Context, t time.Time) ([]Incident, er
 
 func (s *Store) loadUpdates(ctx context.Context, incs []Incident) error {
 	for i := range incs {
-		rows, err := s.db.QueryContext(ctx, `SELECT id, at, status, message FROM incident_updates WHERE incident_id=? ORDER BY at DESC, id DESC`, incs[i].ID)
+		rows, err := s.db.QueryContext(ctx, s.q(`SELECT id, at, status, message FROM incident_updates WHERE incident_id=? ORDER BY at DESC, id DESC`), incs[i].ID)
 		if err != nil {
 			return err
 		}
@@ -488,8 +515,8 @@ func (s *Store) loadUpdates(ctx context.Context, incs []Incident) error {
 }
 
 func (s *Store) incidents(ctx context.Context, where string, args ...any) ([]Incident, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, monitor_id, started_at, resolved_at, cause, last_notified_at, title, status, impact, components
-		FROM incidents `+where, args...)
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT id, monitor_id, started_at, resolved_at, cause, last_notified_at, title, status, impact, components
+		FROM incidents `+where), args...)
 	if err != nil {
 		return nil, err
 	}

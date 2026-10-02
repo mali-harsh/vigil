@@ -22,6 +22,7 @@ import (
 	"github.com/mali-harsh/vigil/internal/notify"
 	"github.com/mali-harsh/vigil/internal/statuspage"
 	"github.com/mali-harsh/vigil/internal/store"
+	"github.com/mali-harsh/vigil/internal/store/storetest"
 )
 
 const secretTarget = "https://internal-secret.example.com/health"
@@ -61,10 +62,7 @@ monitors:
 	if mutate != nil {
 		mutate(cfg)
 	}
-	st, err := store.Open(filepath.Join(t.TempDir(), "v.db"), cfg.StatusPage.Location)
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := storetest.OpenAt(t, filepath.Join(t.TempDir(), "v.db"))
 	ctx := context.Background()
 	now := time.Now().UTC()
 	// api is down with an auto incident; private-db is down (not on the page)

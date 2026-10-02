@@ -5,13 +5,25 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env: {POSTGRES_USER: vigil, POSTGRES_PASSWORD: vigiltest}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U vigil" --health-interval 2s --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: {go-version-file: go.mod}
       - run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
-      - run: go test -race -count=1 ./...
+      - name: test (sqlite)
+        run: go test -race -count=1 ./...
+      - name: test (postgres + HA election)
+        env:
+          VIGIL_TEST_POSTGRES: postgres://vigil:vigiltest@localhost:5432/postgres?sslmode=disable
+        run: go test -race -count=1 ./...
       - name: helm chart
         run: |
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash

@@ -19,7 +19,7 @@ import (
 	"github.com/mali-harsh/vigil/internal/metrics"
 	"github.com/mali-harsh/vigil/internal/monitor"
 	"github.com/mali-harsh/vigil/internal/scheduler"
-	"github.com/mali-harsh/vigil/internal/store"
+	"github.com/mali-harsh/vigil/internal/store/storetest"
 )
 
 const agentToken = "agent-token-0123456789abcdef"
@@ -41,7 +41,7 @@ monitors:
 		t.Fatal(err)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	st, _ := store.Open(filepath.Join(t.TempDir(), "v.db"), nil)
+	st := storetest.OpenAt(t, filepath.Join(t.TempDir(), "v.db"))
 	defer st.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -112,4 +112,34 @@ monitors:
 	}
 	stopAgent()
 	<-agentDone
+}
+
+func TestAgentRetriesUntilServerIsUp(t *testing.T) {
+	var up atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !up.Load() {
+			http.Error(w, "failing over", http.StatusServiceUnavailable)
+			return
+		}
+		w.Write([]byte(`{"agent":"edge","poll_seconds":5,"monitors":[]}`))
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- (&agent.Agent{Server: srv.URL, Token: agentToken, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}).Run(ctx)
+	}()
+	time.Sleep(1500 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("agent gave up on a 503: %v", err)
+	default:
+	}
+	up.Store(true)
+	time.Sleep(2500 * time.Millisecond)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("agent: %v", err)
+	}
 }

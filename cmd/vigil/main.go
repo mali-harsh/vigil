@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,6 +26,7 @@ import (
 	"github.com/mali-harsh/vigil/internal/config"
 	"github.com/mali-harsh/vigil/internal/discovery"
 	"github.com/mali-harsh/vigil/internal/engine"
+	"github.com/mali-harsh/vigil/internal/ha"
 	"github.com/mali-harsh/vigil/internal/metrics"
 	"github.com/mali-harsh/vigil/internal/notify"
 	"github.com/mali-harsh/vigil/internal/scheduler"
@@ -89,12 +91,19 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	if err := os.MkdirAll(cfg.Server.DataDir, 0o750); err != nil {
 		return err
 	}
-	st, err := store.Open(filepath.Join(cfg.Server.DataDir, "vigil.db"), cfg.StatusPage.Location)
+	var st *store.Store
+	var err error
+	if cfg.Server.Database.Driver == "postgres" {
+		st, err = store.OpenPostgres(ctx, cfg.Server.Database.URL, cfg.StatusPage.Location)
+	} else {
+		st, err = store.Open(filepath.Join(cfg.Server.DataDir, "vigil.db"), cfg.StatusPage.Location)
+	}
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 
+	// Shared across leadership terms: metrics, notification delivery, HTTP.
 	reg := metrics.New()
 	hc := &http.Client{Timeout: 15 * time.Second}
 	senders := map[string]notify.Sender{}
@@ -108,41 +117,26 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	dispDone := make(chan struct{})
 	go func() { disp.Run(dispCtx, 4); close(dispDone) }()
 
-	results := make(chan check.Result, 1024)
-	sched := scheduler.New(results)
-	eng, err := engine.New(ctx, cfg, st, disp, sched, reg, log) // starts every local monitor
-	if err != nil {
-		return err
-	}
-	engDone := make(chan struct{})
-	go func() { eng.Run(ctx, results); close(engDone) }()
-
-	if d := cfg.Discovery.Docker; d.Enabled {
-		go discovery.Run(ctx, discovery.NewDocker(d.Socket, log), d.Interval.D(), cfg, eng, log)
-	}
-	if k := cfg.Discovery.Kubernetes; k.Enabled {
-		p, err := discovery.NewKubernetes(k.Namespaces, log)
-		if err != nil {
-			return fmt.Errorf("kubernetes discovery: %w", err)
+	node := ha.NodeID()
+	advertise := advertiseURL(cfg)
+	sw := api.NewSwitch(node, version, func(ctx context.Context) (string, error) {
+		if !st.Postgres() {
+			return "", nil
 		}
-		go discovery.Run(ctx, p, k.Interval.D(), cfg, eng, log)
-	}
-	if hb := cfg.Server.Heartbeat; hb.URL != "" {
-		go heartbeat(ctx, hb.URL, hb.Interval.D(), eng, reg, log)
-	}
-	if dir := cfg.StatusPage.ExportDir; dir != "" {
-		go statuspage.Export(ctx, &statuspage.Builder{Cfg: cfg, Engine: eng, Store: st}, dir, time.Minute, log)
-	}
-
-	handler := (&api.Server{Cfg: cfg, Engine: eng, Store: st, Beater: sched, Results: results, Metrics: reg, Version: version, Log: log}).Handler()
+		li, err := st.LeaseInfo(ctx, ha.LeaseName)
+		if err != nil || li == nil || li.ExpiresIn <= 0 || li.Holder == node {
+			return "", err
+		}
+		return li.Address, nil
+	})
 	srv := &http.Server{
 		Addr:              cfg.Server.Listen,
-		Handler:           handler,
+		Handler:           sw,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      30 * time.Second,
 	}
-	srvErr := make(chan error, 2)
+	srvErr := make(chan error, 3) // http, redirect, single-node term
 	if tls := cfg.Server.TLS; len(tls.Domains) > 0 {
 		// Automatic HTTPS: certificates from Let's Encrypt, cached in data_dir.
 		m := &autocert.Manager{
@@ -159,21 +153,47 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	} else {
 		go func() { srvErr <- srv.ListenAndServe() }()
 	}
-	log.Info("vigil started", "version", version, "listen", srv.Addr, "tls_domains", cfg.Server.TLS.Domains, "monitors", len(cfg.Monitors), "agents", len(cfg.Agents))
+	log.Info("vigil started", "version", version, "node", node, "listen", srv.Addr, "tls_domains", cfg.Server.TLS.Domains,
+		"database", cfg.Server.Database.Driver, "monitors", len(cfg.Monitors), "agents", len(cfg.Agents))
+
+	var termErr error
+	lead := func(lctx context.Context) {
+		if termErr = term(lctx, cfg, st, disp, reg, sw, node, log); termErr != nil {
+			log.Error("leader term failed", "err", termErr)
+		}
+	}
+	electDone := make(chan struct{})
+	go func() {
+		defer close(electDone)
+		if st.Postgres() {
+			// several servers may share this database: only the elected one acts
+			if len(cfg.Server.TLS.Domains) > 0 {
+				log.Warn("server.tls with several nodes: ACME challenges may reach a node without the token — terminate TLS at your load balancer for HA")
+			}
+			log.Info("high availability: competing for leadership", "node", node, "advertise", advertise, "lease_ttl", cfg.Server.HA.LeaseTTL.D())
+			(&ha.Elector{Store: st, ID: node, Address: advertise, TTL: cfg.Server.HA.LeaseTTL.D(), Log: log}).Run(ctx, lead)
+		} else {
+			lead(ctx)             // sqlite: single node, always the leader
+			if ctx.Err() == nil { // nobody else will take over: exit so the supervisor restarts us
+				srvErr <- fmt.Errorf("engine stopped: %v", termErr)
+			}
+		}
+	}()
 
 	select {
 	case <-ctx.Done():
 	case err := <-srvErr:
 		if !errors.Is(err, http.ErrServerClosed) {
+			stop()
+			<-electDone
 			return err
 		}
 	}
 	log.Info("shutting down")
+	<-electDone // term ends, lease released → a standby takes over at once
 	shCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	srv.Shutdown(shCtx)
-	sched.Wait()
-	<-engDone
 	// let queued alerts go out, but never hang shutdown on a dead channel
 	disp.Close()
 	select {
@@ -181,6 +201,45 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	case <-time.After(10 * time.Second):
 		log.Warn("pending notifications abandoned at shutdown")
 	}
+	return nil
+}
+
+// term runs everything only the leader does — probes, engine, discovery,
+// dead-man heartbeat, static export — and serves the full app until lctx ends.
+// A new term rebuilds state from the database, exactly like a restart.
+func term(lctx context.Context, cfg *config.Config, st *store.Store, disp *notify.Dispatcher, reg *metrics.Registry, sw *api.Switch, node string, log *slog.Logger) error {
+	results := make(chan check.Result, 1024)
+	sched := scheduler.New(results)
+	defer sched.Wait()
+	eng, err := engine.New(lctx, cfg, st, disp, sched, reg, log) // starts every local monitor
+	if err != nil {
+		return err
+	}
+	engDone := make(chan struct{})
+	go func() { eng.Run(lctx, results); close(engDone) }()
+	defer func() { <-engDone }()
+
+	if d := cfg.Discovery.Docker; d.Enabled {
+		go discovery.Run(lctx, discovery.NewDocker(d.Socket, log), d.Interval.D(), cfg, eng, log)
+	}
+	if k := cfg.Discovery.Kubernetes; k.Enabled {
+		p, err := discovery.NewKubernetes(k.Namespaces, log)
+		if err != nil {
+			return fmt.Errorf("kubernetes discovery: %w", err)
+		}
+		go discovery.Run(lctx, p, k.Interval.D(), cfg, eng, log)
+	}
+	if hb := cfg.Server.Heartbeat; hb.URL != "" {
+		go heartbeat(lctx, hb.URL, hb.Interval.D(), eng, reg, log)
+	}
+	if dir := cfg.StatusPage.ExportDir; dir != "" {
+		go statuspage.Export(lctx, &statuspage.Builder{Cfg: cfg, Engine: eng, Store: st}, dir, time.Minute, log)
+	}
+
+	sw.Set((&api.Server{Cfg: cfg, Engine: eng, Store: st, Beater: sched, Results: results, Metrics: reg, Version: version, Node: node, Log: log}).Handler())
+	log.Info("serving as active node", "node", node)
+	<-lctx.Done()
+	sw.Set(nil) // back to standby before anything else stops
 	return nil
 }
 
@@ -217,6 +276,34 @@ func heartbeat(ctx context.Context, url string, every time.Duration, eng *engine
 		case <-t.C:
 		}
 	}
+}
+
+// advertiseURL is how other nodes reach this one.
+func advertiseURL(cfg *config.Config) string {
+	if u := cfg.Server.HA.AdvertiseURL; u != "" {
+		return u
+	}
+	if u := os.Getenv("VIGIL_ADVERTISE_URL"); u != "" {
+		return u
+	}
+	host, port, _ := net.SplitHostPort(cfg.Server.Listen)
+	if len(cfg.Server.TLS.Domains) > 0 {
+		port = "443"
+	}
+	ip := host // bound to a specific address: that's the only one that works
+	if ip == "" || ip == "0.0.0.0" || ip == "::" {
+		ip = "127.0.0.1"
+		// UDP "dial" sends nothing; it just picks the interface the OS would route on.
+		if c, err := net.Dial("udp", "192.0.2.1:9"); err == nil {
+			ip = c.LocalAddr().(*net.UDPAddr).IP.String()
+			c.Close()
+		}
+	}
+	scheme := "http"
+	if port == "443" {
+		scheme = "https"
+	}
+	return scheme + "://" + net.JoinHostPort(ip, port)
 }
 
 func envOr(k, def string) string {

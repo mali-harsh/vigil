@@ -82,11 +82,25 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	a.running = map[string]config.Monitor{}
 
-	// First contact must succeed: a wrong token or URL should fail loudly at
-	// startup rather than retry silently forever.
-	as, err := a.fetch(ctx)
-	if err != nil {
-		return fmt.Errorf("first contact with %s: %w", a.Server, err)
+	// First contact: a wrong token or URL (401/403/404) fails loudly at
+	// startup; anything transient (network, 5xx, server restarting or failing
+	// over) is retried with backoff.
+	var as *Assignments
+	for wait := time.Second; ; wait = min(2*wait, 30*time.Second) {
+		var err error
+		if as, err = a.fetch(ctx); err == nil {
+			break
+		}
+		var se *statusError
+		if errors.As(err, &se) && (se.code == http.StatusUnauthorized || se.code == http.StatusForbidden || se.code == http.StatusNotFound) {
+			return fmt.Errorf("first contact with %s: %w", a.Server, err)
+		}
+		a.Log.Warn("server not reachable yet, retrying", "server", a.Server, "retry_in", wait, "err", err)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(wait):
+		}
 	}
 	a.name = as.Agent
 	a.Log.Info("agent connected", "agent", a.name, "server", a.Server, "monitors", len(as.Monitors))
@@ -142,7 +156,7 @@ func (a *Agent) fetch(ctx context.Context) (*Assignments, error) {
 	case http.StatusOK:
 	default:
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return nil, &statusError{resp.StatusCode, strings.TrimSpace(string(b))}
 	}
 	var as Assignments
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&as); err != nil {
@@ -243,6 +257,13 @@ func (a *Agent) post(ctx context.Context, rs []WireResult) error {
 	}
 	return nil
 }
+
+type statusError struct {
+	code int
+	body string
+}
+
+func (e *statusError) Error() string { return fmt.Sprintf("http %d: %s", e.code, e.body) }
 
 func isLocal(u string) bool {
 	return strings.HasPrefix(u, "http://localhost") || strings.HasPrefix(u, "http://127.0.0.1") || strings.HasPrefix(u, "http://[::1]")

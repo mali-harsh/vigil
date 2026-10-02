@@ -19,6 +19,7 @@ import (
 	"github.com/mali-harsh/vigil/internal/notify"
 	"github.com/mali-harsh/vigil/internal/scheduler"
 	"github.com/mali-harsh/vigil/internal/store"
+	"github.com/mali-harsh/vigil/internal/store/storetest"
 )
 
 type recorder struct {
@@ -76,10 +77,7 @@ func start(t *testing.T, dbPath string, ms ...config.Monitor) *harness {
 func startCfg(t *testing.T, dbPath string, cfg *config.Config) *harness {
 	t.Helper()
 	cfg.Server.Retention = config.Duration(time.Hour)
-	st, err := store.Open(dbPath, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := storetest.OpenAt(t, dbPath)
 	ctx, cancel := context.WithCancel(context.Background())
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rec := &recorder{}

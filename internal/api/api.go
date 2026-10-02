@@ -41,6 +41,7 @@ type Server struct {
 	Results chan<- check.Result // agent results enter the engine here
 	Metrics *metrics.Registry
 	Version string
+	Node    string // this server's ID (HA)
 	Log     *slog.Logger
 
 	page *statuspage.Builder
@@ -54,7 +55,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/status", s.statusJSON)
 	mux.HandleFunc("GET /badge/{id}", s.badge)
 	mux.HandleFunc("GET /healthz", s.healthz)
-	mux.HandleFunc("/push/{token}", s.push) // GET/POST/HEAD: whatever the cron job can do
+	mux.HandleFunc("GET /readyz", s.healthz) // the active node is ready when healthy
+	mux.HandleFunc("/push/{token}", s.push)  // GET/POST/HEAD: whatever the cron job can do
 
 	mux.Handle("GET /metrics", s.read(s.metricsHandler))
 	mux.Handle("GET /api/v1/agents", s.read(s.agents))
@@ -232,6 +234,7 @@ func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
 		g = append(g, metrics.Sample{Name: name, Help: help, Labels: l, Value: v})
 	}
 	add("vigil_build_info", "vigil build.", metrics.L{"version": s.Version}, 1)
+	add("vigil_leader", "1 on the active (leader) node.", metrics.L{"node": s.Node}, 1)
 	b := func(c bool) float64 {
 		if c {
 			return 1

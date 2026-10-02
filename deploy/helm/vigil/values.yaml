@@ -24,6 +24,14 @@ config: |
       type: http
       url: https://example.com
 
+# HA: several replicas sharing Postgres; one leads, the others stand by and
+# proxy requests to it (so the Service can include all of them). Requires in `config`:
+#   server: {database: {driver: postgres, url: "${DATABASE_URL}"}}
+# with DATABASE_URL in existingSecret.
+ha:
+  enabled: false
+  replicas: 2
+
 persistence:
   size: 1Gi
   storageClass: ""   # cluster default
