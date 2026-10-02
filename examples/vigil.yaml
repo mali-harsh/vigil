@@ -28,6 +28,8 @@ server:
 status_page:
   title: Example Status
   description: Live status of Example services
+  # logo_url: https://example.com/logo.svg
+  # accent: "#4f46e5"         # brand colour for buttons and links
   timezone: Asia/Kolkata      # day boundaries for the 90-day bars
   # export_dir: ./public      # static copy every minute; sync to S3/CF Pages
   components:                 # only monitors listed here are public

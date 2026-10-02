@@ -578,3 +578,30 @@ func (s *Store) Ping(ctx context.Context) error {
 	}
 	return s.db.PingContext(ctx)
 }
+
+// Point is one result for charts.
+type Point struct {
+	At        time.Time
+	LatencyMS int64
+	Down      bool
+}
+
+// Recent returns results since t for every monitor in one query, oldest
+// first — for dashboard sparklines.
+func (s *Store) Recent(ctx context.Context, since time.Time) (map[string][]Point, error) {
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT monitor_id, at, latency_ms, status FROM results WHERE at>=? ORDER BY at`), ms(since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]Point{}
+	for rows.Next() {
+		var id, st string
+		var at, lat int64
+		if err := rows.Scan(&id, &at, &lat, &st); err != nil {
+			return nil, err
+		}
+		out[id] = append(out[id], Point{At: fromMS(at), LatencyMS: lat, Down: st == "down"})
+	}
+	return out, rows.Err()
+}

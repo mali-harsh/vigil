@@ -6,6 +6,11 @@ Self-hosted uptime monitoring and status page. One binary, one config file, aler
 
 **Status:** Phases 0–3 done (core engine · status page, incidents, maintenance, admin UI · agents, quorum, discovery, self-monitoring, metrics, Helm · Postgres HA · protocol checks, on-call channels, escalation + ack, scoped keys + SSO, subscribers). Not production-ready yet.
 
+| Status page | Admin |
+|---|---|
+| ![Status page](docs/screenshots/status-light.png) | ![Monitors](docs/screenshots/admin-monitors.png) |
+| ![Status page, dark](docs/screenshots/status-dark.png) | ![Monitor detail](docs/screenshots/admin-monitor.png) |
+
 ## Try everything locally
 
 ```bash
@@ -234,6 +239,8 @@ vigil is one static binary (no CGO) with a SQLite file — it runs wherever a pr
 ## Status page
 
 - **Components & groups** — only monitors placed in a component are public; targets, IPs and raw errors never appear (tested).
+- **Branding** — `status_page.title`, `description`, `logo_url` and `accent` (hex colour for buttons/links); light and dark follow the visitor's system. The favicon is a dot in the live overall status colour.
+- **Readable history** — hover any day for uptime, estimated downtime and the incidents that touched it; a day with a public incident is never shown as clean.
 - **90-day bars** from daily rollups that outlive raw-result retention; a day's uptime is its weakest monitor's.
 - **Incidents** — automatic on outage (titled by component, e.g. "API outage"), plus manual ones with an impact; public updates Investigating → Identified → Monitoring → Resolved.
 - **Maintenance windows** — one-off or daily/weekly, wall-clock stable across DST; alerts silenced, excluded from uptime, shown on the page. Still broken when the window ends → alerted then.

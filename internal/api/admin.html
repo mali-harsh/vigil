@@ -1,169 +1,271 @@
+{{define "css"}}<style>
+:root{--bg:#f6f7f9;--surface:#fff;--surface-2:#f1f3f6;--fg:#0e1420;--fg-2:#3b4556;--muted:#6b7586;--line:#e5e8ee;--line-2:#eef0f4;
+--accent:#4f46e5;--accent-soft:#eef0ff;--up:#1f9d55;--up-soft:#e6f6ec;--deg:#d99a0f;--deg-soft:#fdf3dc;--down:#dc3b3b;--down-soft:#fde8e8;--maint:#3b74e8;--unk:#98a2b3;
+--shadow:0 1px 2px rgba(16,24,40,.04),0 1px 3px rgba(16,24,40,.06)}
+@media (prefers-color-scheme:dark){:root{--bg:#0a0d13;--surface:#11161f;--surface-2:#171d28;--fg:#e9edf3;--fg-2:#c3cad6;--muted:#8a94a6;--line:#212836;--line-2:#1a202b;
+--accent:#8b8cff;--accent-soft:#1c1f3d;--up:#3ccf7a;--up-soft:#10291c;--deg:#f2b632;--deg-soft:#2d2410;--down:#f26464;--down-soft:#331616;--maint:#6b9bff;--unk:#5d6778;--shadow:none}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.btn{display:inline-flex;align-items:center;gap:6px;font:inherit;font-weight:600;font-size:13px;border-radius:8px;padding:7px 12px;border:1px solid var(--line);background:var(--surface);color:var(--fg);cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--muted);text-decoration:none}.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}.btn.sm{padding:4px 9px;font-size:12px}
+.btn.danger{color:var(--down)}
+input,select,textarea{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--fg);width:100%}
+textarea{min-height:76px;resize:vertical}
+label{font-size:12px;color:var(--muted);display:grid;gap:4px;font-weight:500}
+</style>{{end}}
+
 {{define "head"}}<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>vigil admin · {{.Title}}</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
+<title>{{if .PageTitle}}{{.PageTitle}} · {{end}}vigil · {{.Title}}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Cpath d='M8 17l5 5 11-12' stroke='white' stroke-width='3.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+{{template "css" .}}
 <style>
-:root{--bg:#f6f7f9;--card:#fff;--fg:#0f172a;--muted:#64748b;--line:#e2e8f0;--soft:#f1f5f9;--accent:#4f46e5;
---up:#16a34a;--deg:#f59e0b;--down:#dc2626;--maint:#3b82f6;--unk:#94a3b8}
-@media (prefers-color-scheme:dark){:root{--bg:#0a0c10;--card:#12151b;--fg:#e8edf4;--muted:#8b95a7;--line:#232833;--soft:#181c24;--accent:#818cf8}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
-nav{display:flex;align-items:center;gap:20px;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--card);flex-wrap:wrap}
-nav b{font-size:15px}nav a{color:var(--muted);text-decoration:none}nav a.on{color:var(--fg);font-weight:600}nav .sp{flex:1}
-nav form{margin:0}nav button{background:none;border:0;color:var(--muted);cursor:pointer;font:inherit;padding:0}
-main{max-width:1100px;margin:0 auto;padding:24px 16px 48px}
-h1{font-size:20px;margin:0 0 16px}h2{font-size:15px;margin:24px 0 10px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-.stats{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
-.stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;min-width:120px}
-.stat b{display:block;font-size:22px;font-variant-numeric:tabular-nums}.stat span{color:var(--muted);font-size:12px}
+.app{display:grid;grid-template-columns:220px 1fr;min-height:100vh}
+.side{background:var(--surface);border-right:1px solid var(--line);padding:18px 12px;display:flex;flex-direction:column;gap:4px;position:sticky;top:0;height:100vh}
+.logo{display:flex;align-items:center;gap:9px;font-weight:700;font-size:16px;padding:4px 10px 16px;color:var(--fg)}
+.logo:hover{text-decoration:none}
+.logo i{width:26px;height:26px;border-radius:7px;background:var(--accent);display:grid;place-items:center}
+.nav{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:var(--fg-2);font-weight:500;white-space:nowrap}
+.nav:hover{background:var(--surface-2);text-decoration:none}.nav.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.nav svg{flex:none;opacity:.85}.nav .n{margin-left:auto;font-size:11px;font-weight:700;background:var(--down);color:#fff;border-radius:99px;padding:0 7px;line-height:18px}
+.side .sp{flex:1}
+.me{border-top:1px solid var(--line);padding:12px 10px 0;font-size:12px;color:var(--muted)}
+.me b{display:block;color:var(--fg);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.me form{margin:8px 0 0}.me button{background:none;border:0;color:var(--muted);padding:0;font:inherit;cursor:pointer}.me button:hover{color:var(--fg)}
+main{padding:26px 32px 60px;max-width:1240px;width:100%}
+.ph{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:18px;flex-wrap:wrap}
+.ph h1{font-size:22px;margin:0;letter-spacing:-.015em}.ph p{margin:3px 0 0;color:var(--muted)}
+h2{font-size:14px;margin:28px 0 10px;font-weight:650}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}
+.tile{padding:14px 16px}.tile .v{font-size:26px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.1}.tile .k{color:var(--muted);font-size:12.5px;margin-top:2px}
+.tile.up .v{color:var(--up)}.tile.deg .v{color:var(--deg)}.tile.down .v{color:var(--down)}
+.tile.alert{border-color:color-mix(in srgb,var(--down) 45%,var(--line));background:var(--down-soft)}
+.bar{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.bar input[type=search]{max-width:300px}
+.chipset{display:flex;gap:6px;flex-wrap:wrap}
+.fchip{font:inherit;font-size:12.5px;font-weight:600;border:1px solid var(--line);background:var(--surface);color:var(--fg-2);border-radius:99px;padding:4px 11px;cursor:pointer}
+.fchip[aria-pressed=true]{background:var(--fg);color:var(--bg);border-color:var(--fg)}
 .wrap{overflow-x:auto}
-table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px 14px;border-top:1px solid var(--line);white-space:nowrap}
-th{border-top:0;color:var(--muted);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
-td.num{font-variant-numeric:tabular-nums}td.msg{white-space:normal;color:var(--muted);max-width:360px;overflow-wrap:anywhere}
-a{color:var(--accent)}
-.st{display:inline-flex;align-items:center;gap:6px;font-weight:550}
-.st::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--unk)}
-.st.up::before{background:var(--up)}.st.degraded::before{background:var(--deg)}.st.down::before{background:var(--down)}
-.tag{font-size:11px;padding:1px 6px;border-radius:4px;background:var(--soft);color:var(--muted);margin-left:6px}
-.tag.maint{background:var(--maint);color:#fff}.tag.stale{background:var(--deg);color:#fff}
-svg.chart{width:100%;height:200px;display:block;background:var(--soft)}
-form.box{padding:16px;display:grid;gap:10px}
-label{font-size:12px;color:var(--muted);display:grid;gap:4px}
-input,select,textarea{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg)}
-textarea{min-height:70px;resize:vertical}
-button.primary{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px 14px;font:inherit;font-weight:600;cursor:pointer;justify-self:start}
-.checks{display:flex;flex-wrap:wrap;gap:6px 14px}.checks label{display:flex;flex-direction:row;align-items:center;gap:6px;color:var(--fg);font-size:14px}
-.err{background:#fee2e2;color:#991b1b;padding:10px 14px;border-radius:8px;margin-bottom:16px}
-.inc{padding:16px;border-top:1px solid var(--line)}.inc:first-child{border-top:0}
-.inc h3{margin:0 0 4px;font-size:15px}.meta{color:var(--muted);font-size:12px}
-.upd{margin:8px 0 0;font-size:13px}.upd b{text-transform:capitalize}
-details summary{cursor:pointer;color:var(--accent);margin-top:10px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:640px){.grid{grid-template-columns:1fr}}
-.empty{padding:16px;color:var(--muted)}
-</style></head><body>
-<nav><b>vigil</b><a href="/admin" class="{{if eq .Nav "monitors"}}on{{end}}">Monitors</a><a href="/admin/incidents" class="{{if eq .Nav "incidents"}}on{{end}}">Incidents</a><a href="/" target="_blank">Status page ↗</a><span class="sp"></span>
-{{with .Me}}<span class="meta">{{.Name}} · {{range $i, $s := .Scopes}}{{if $i}}, {{end}}{{$s}}{{end}}</span>{{end}}
-<form method="post" action="/admin/logout"><button>Log out</button></form></nav><main>{{end}}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:11px 14px;border-top:1px solid var(--line-2);white-space:nowrap;vertical-align:middle}
+th{border-top:0;color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em}
+tbody tr:hover{background:var(--surface-2)}
+td.num{font-variant-numeric:tabular-nums}td.dim,.dim{color:var(--muted)}
+td.msg{white-space:normal;color:var(--muted);max-width:340px;overflow-wrap:anywhere;font-size:13px}
+.mname a{font-weight:600;color:var(--fg)}.mname small{display:block;color:var(--muted);font-size:12px;max-width:340px;overflow:hidden;text-overflow:ellipsis}
+.st{display:inline-flex;align-items:center;gap:7px;font-weight:600;font-size:13px;text-transform:capitalize}
+.st::before{content:"";width:9px;height:9px;border-radius:50%;background:var(--unk);flex:none}
+.st.up::before{background:var(--up)}.st.degraded::before{background:var(--deg)}.st.down::before{background:var(--down);box-shadow:0 0 0 3px var(--down-soft)}
+.st.down{color:var(--down)}.st.degraded{color:var(--deg)}
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:5px;background:var(--surface-2);color:var(--muted);margin:0 4px 0 0;border:1px solid var(--line)}
+.tag.maint{background:var(--maint);color:#fff;border-color:transparent}.tag.stale{background:var(--deg);color:#fff;border-color:transparent}
+.tag.acc{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+svg.spark{display:block}
+.spark .ln{fill:none;stroke:var(--accent);stroke-width:1.5}.spark .ar{fill:var(--accent);opacity:.1}.spark .dn{stroke:var(--down);stroke-width:2}
+.flash{padding:10px 14px;border-radius:10px;margin-bottom:16px;background:var(--accent-soft);color:var(--fg)}
+.err{background:var(--down-soft);color:var(--down)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.empty{padding:18px;color:var(--muted)}
+.pad{padding:16px}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 18px;font-size:13px;margin:0}.kv dt{color:var(--muted)}.kv dd{margin:0}
+/* chart */
+.chart{position:relative;padding:14px 16px 10px}
+.chart svg{width:100%;height:auto;display:block;overflow:visible}
+.chart .grid line{stroke:var(--line);stroke-dasharray:3 4}.chart .lbl{fill:var(--muted);font-size:11px}
+.chart .avg{fill:none;stroke:var(--accent);stroke-width:2;vector-effect:non-scaling-stroke}
+.chart .max{fill:none;stroke:var(--accent);stroke-width:1;opacity:.35;vector-effect:non-scaling-stroke}
+.chart .area{fill:var(--accent);opacity:.08}.chart .fail{stroke:var(--down);stroke-width:2.5}
+.chart .cur{stroke:var(--muted);stroke-width:1;opacity:0}
+.readout{position:absolute;pointer-events:none;background:var(--fg);color:var(--bg);font-size:12px;padding:7px 10px;border-radius:8px;opacity:0;white-space:nowrap;line-height:1.45}
+.legendc{display:flex;gap:14px;font-size:12px;color:var(--muted);padding:0 16px 12px}
+.legendc i{display:inline-block;width:14px;height:2px;vertical-align:middle;margin-right:5px;background:var(--accent)}
+/* incidents */
+.inc{padding:16px;border-top:1px solid var(--line-2)}.inc:first-child{border-top:0}
+.inc h3{margin:0;font-size:15px}.inc .meta{color:var(--muted);font-size:12.5px;margin-top:3px}
+.tl{list-style:none;margin:12px 0 0 4px;padding:0 0 0 16px;border-left:2px solid var(--line)}
+.tl li{position:relative;padding:0 0 10px;font-size:13.5px}.tl li:last-child{padding-bottom:0}
+.tl li::before{content:"";position:absolute;left:-22px;top:6px;width:8px;height:8px;border-radius:50%;background:var(--surface);border:2px solid var(--muted)}
+.tl li:first-child::before{background:var(--accent);border-color:var(--accent)}
+.tl b{text-transform:capitalize}.tl .dim{font-size:12px}
+.acts{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center}
+details.form summary{list-style:none;cursor:pointer}details.form summary::-webkit-details-marker{display:none}
+form.box{padding:14px 0 0;display:grid;gap:10px}
+.checks{display:flex;flex-wrap:wrap;gap:6px 14px}.checks label{display:flex;flex-direction:row;align-items:center;gap:6px;color:var(--fg);font-size:13.5px}.checks input{width:auto}
+.open-inc{border-color:color-mix(in srgb,var(--down) 35%,var(--line))}
+.open-inc .inc{box-shadow:inset 3px 0 0 var(--down)}
+@media (max-width:900px){
+  .app{grid-template-columns:1fr}.side{position:static;height:auto;flex-direction:row;align-items:center;overflow-x:auto;padding:10px 12px;border-right:0;border-bottom:1px solid var(--line)}
+  .logo{padding:0 8px 0 0}.side .sp,.me{display:none}.nav{padding:6px 9px}
+  main{padding:18px 16px 50px}.grid2{grid-template-columns:1fr}
+  table.mon thead{display:none}
+  table.mon tr{display:grid;grid-template-columns:14px 1fr auto;gap:2px 10px;align-items:center;padding:11px 14px;border-top:1px solid var(--line-2)}
+  table.mon tr:first-child{border-top:0}
+  table.mon td{border:0;padding:0;white-space:normal}table.mon td.hide-m{display:none}
+  table.mon td:first-child .st{font-size:0;gap:0}table.mon td:first-child .tag{display:none}
+  table.mon .mname small{max-width:none;white-space:nowrap}
+}
+</style></head><body><div class="app">
+<aside class="side">
+<a class="logo" href="/admin"><i><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></i>vigil</a>
+<a class="nav{{if eq .Nav "monitors"}} on{{end}}" href="/admin"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Monitors</a>
+<a class="nav{{if eq .Nav "incidents"}} on{{end}}" href="/admin/incidents"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>Incidents{{with .OpenCount}}<span class="n">{{.}}</span>{{end}}</a>
+<a class="nav{{if eq .Nav "system"}} on{{end}}" href="/admin/system"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>System</a>
+<a class="nav" href="/" target="_blank"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>Status page</a>
+<span class="sp"></span>
+{{with .Me}}<div class="me"><b>{{.Name}}</b>{{range $i, $s := .Scopes}}{{if $i}}, {{end}}{{$s}}{{end}} · {{.Via}}<form method="post" action="/admin/logout"><button>Sign out</button></form></div>{{end}}
+</aside><main>{{end}}
 
-{{define "foot"}}</main></body></html>{{end}}
+{{define "foot"}}</main></div></body></html>{{end}}
 
-{{define "login"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>vigil · sign in</title>
-<style>:root{--bg:#f6f7f9;--card:#fff;--fg:#0f172a;--line:#e2e8f0;--accent:#4f46e5}@media (prefers-color-scheme:dark){:root{--bg:#0a0c10;--card:#12151b;--fg:#e8edf4;--line:#232833;--accent:#818cf8}}
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,sans-serif;padding:16px}
-form{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:24px;width:100%;max-width:360px;display:grid;gap:12px}
-h1{margin:0;font-size:18px}input{font:inherit;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg)}
-button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:10px;font:inherit;font-weight:600;cursor:pointer}.e{color:#dc2626}</style></head>
-<body><form method="post" action="/admin/login"><h1>vigil admin</h1>{{if .Error}}<div class="e">Invalid token.</div>{{end}}
-<input type="password" name="token" placeholder="API key / admin token" autocomplete="current-password" required autofocus><button>Sign in</button>
-{{if .SSO}}<p style="margin:0;font-size:13px;opacity:.7">Single sign-on is enabled: open /admin through your company login proxy.</p>{{end}}</form></body></html>{{end}}
+{{define "spark"}}{{if .Empty}}<span class="dim">—</span>{{else}}<svg class="spark" width="120" height="28" viewBox="0 0 120 28" aria-hidden="true"><path class="ar" d="{{.Area}}"/><path class="ln" d="{{.Path}}"/>{{range .Downs}}<line class="dn" x1="{{.}}" x2="{{.}}" y1="20" y2="28"/>{{end}}</svg>{{end}}{{end}}
 
-{{define "ack"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Acknowledge incident</title>
-<style>:root{--bg:#f6f7f9;--card:#fff;--fg:#0f172a;--line:#e2e8f0;--accent:#4f46e5;--muted:#64748b}@media (prefers-color-scheme:dark){:root{--bg:#0a0c10;--card:#12151b;--fg:#e8edf4;--line:#232833;--accent:#818cf8;--muted:#8b95a7}}
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif;padding:16px}
-.box{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:24px;width:100%;max-width:440px;display:grid;gap:12px}
-h1{margin:0;font-size:18px}p{margin:0;color:var(--muted)}input{font:inherit;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg)}
-button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:10px;font:inherit;font-weight:600;cursor:pointer}</style></head>
-<body><div class="box"><h1>{{.Inc.Title}}</h1>
-{{if .Inc.ResolvedAt}}<p>This incident is already resolved.</p>
-{{else if .Inc.AckedAt}}<p>{{if .Done}}✅ Acknowledged. Escalation and reminders stopped.{{else}}Already acknowledged by {{.Inc.AckedBy}}.{{end}}</p>
-{{else}}<p>Started {{ts .Inc.StartedAt}}. Acknowledging stops escalation and reminders and tells everyone already paged that you're on it.</p>
-<form method="post" class="box" style="padding:0;border:0"><input name="name" maxlength="80" placeholder="Your name" value="{{.Who}}" {{if .Who}}readonly{{else}}required{{end}}><button>Acknowledge</button></form>{{end}}
-</div></body></html>{{end}}
+{{define "login"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Sign in · vigil</title>{{template "css" .}}
+<style>body{min-height:100vh;display:grid;place-items:center;padding:16px}.box{width:100%;max-width:380px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:26px;display:grid;gap:14px;box-shadow:var(--shadow)}
+.box h1{margin:0;font-size:19px}.box p{margin:0;color:var(--muted);font-size:13.5px}.box .btn{justify-content:center;padding:10px}.e{color:var(--down);font-size:13.5px}</style></head>
+<body><form method="post" action="/admin/login" class="box"><div><h1>Sign in to vigil</h1><p>{{.Title}}</p></div>{{if .Error}}<div class="e">That key isn't valid.</div>{{end}}
+<label>API key or admin token<input type="password" name="token" autocomplete="current-password" required autofocus></label><button class="btn primary">Sign in</button>
+{{if .SSO}}<p>Single sign-on is enabled — open this page through your company login.</p>{{end}}</form></body></html>{{end}}
 
 {{define "dashboard"}}{{template "head" .}}
-<h1>Monitors</h1>
-{{with .Flash}}<div class="err" style="background:var(--soft);color:var(--fg)">{{.}}</div>{{end}}
-<div class="stats">
-<div class="stat"><b>{{len .Monitors}}</b><span>monitors</span></div>
-<div class="stat"><b style="color:var(--up)">{{index .Counts "up"}}</b><span>up</span></div>
-<div class="stat"><b style="color:var(--deg)">{{index .Counts "degraded"}}</b><span>degraded</span></div>
-<div class="stat"><b style="color:var(--down)">{{index .Counts "down"}}</b><span>down</span></div>
-<div class="stat"><b>{{.Open}}</b><span>open incidents</span></div>
+<div class="ph"><div><h1>Monitors</h1><p>{{len .Monitors}} monitors · latency over the last hour</p></div>
+{{if .Me.Can "incidents:write"}}<a class="btn" href="/admin/incidents#declare">Declare incident</a>{{end}}</div>
+{{with .Flash}}<div class="flash">{{.}}</div>{{end}}
+<div class="tiles">
+<div class="card tile up"><div class="v">{{index .Counts "up"}}</div><div class="k">Up</div></div>
+<div class="card tile deg"><div class="v">{{index .Counts "degraded"}}</div><div class="k">Degraded</div></div>
+<div class="card tile down{{if index .Counts "down"}} alert{{end}}"><div class="v">{{index .Counts "down"}}</div><div class="k">Down</div></div>
+<a class="card tile{{if .Open}} alert{{end}}" href="/admin/incidents" style="color:inherit;text-decoration:none"><div class="v">{{len .Open}}</div><div class="k">Open incidents</div></a>
+{{with .Agents}}<a class="card tile" href="/admin/system" style="color:inherit;text-decoration:none"><div class="v">{{$.AgentsOnline}}<span class="dim" style="font-size:16px">/{{len .}}</span></div><div class="k">Agents online</div></a>{{end}}
 </div>
-<div class="card wrap"><table>
-<tr><th>Monitor</th><th>State</th><th>Since</th><th>Latency</th><th>24h</th><th>7d</th><th>Last result</th></tr>
-{{range .Monitors}}<tr>
-<td><a href="/admin/monitors/{{.ID}}">{{.Name}}</a><span class="tag">{{.Type}}</span>{{if ne .Source "config"}}<span class="tag">{{.Source}}</span>{{end}}{{if gt (len .Locations) 1}}<span class="tag">{{len .Locations}} locations · quorum {{.Quorum}}</span>{{else}}{{range .Locations}}{{if ne .Name "local"}}<span class="tag">via {{.Name}}</span>{{end}}{{end}}{{end}}{{if .Maintenance}}<span class="tag maint">maintenance</span>{{end}}{{if .Stale}}<span class="tag stale">stale</span>{{end}}</td>
-<td><span class="st {{.State}}">{{.State}}</span>{{if .Pending}}<span class="tag">confirming {{.Pending}}</span>{{end}}</td>
-<td>{{ago .Since}}</td>
-<td class="num">{{with .Last}}{{.LatencyMS}} ms{{else}}—{{end}}</td>
-<td class="num">{{pct .Uptime24h}}</td><td class="num">{{pct .Uptime7d}}</td>
-<td class="msg">{{with .Last}}{{.Message}} · {{ago .At}}{{end}}</td>
-</tr>{{else}}<tr><td colspan="7" class="empty">No monitors configured.</td></tr>{{end}}
-</table></div>
-{{if and .Notifiers (.Me.Can "admin")}}<h2>Notifiers</h2>
-<div class="card wrap"><table><tr><th>Name</th><th></th></tr>
-{{range .Notifiers}}<tr><td>{{.}}</td><td style="text-align:right"><form method="post" action="/admin/notifiers/{{.}}/test" style="margin:0"><button class="primary" style="padding:5px 10px">Send test</button></form></td></tr>{{end}}
-</table></div>{{end}}
-{{with .Agents}}<h2>Agents</h2>
-<div class="card wrap"><table><tr><th>Agent</th><th>Status</th><th>Last seen</th><th>Monitors</th></tr>
-{{range .}}<tr><td>{{.Name}}</td><td><span class="st {{if .Online}}up{{else}}down{{end}}">{{if .Online}}online{{else}}offline{{end}}</span></td><td>{{ago .LastSeen}}</td><td class="num">{{.Monitors}}</td></tr>{{end}}
-</table></div>{{end}}
+<div class="bar"><input type="search" id="q" placeholder="Search monitors, targets, tags…" aria-label="Search monitors">
+<div class="chipset" role="group" aria-label="Filter">
+<button class="fchip" data-f="all" aria-pressed="true">All</button><button class="fchip" data-f="problem" aria-pressed="false">Problems</button><button class="fchip" data-f="up" aria-pressed="false">Up</button><button class="fchip" data-f="other" aria-pressed="false">Unknown / paused</button></div>
+<span class="dim" id="count"></span></div>
+<div class="card wrap"><table class="mon"><thead><tr><th>Status</th><th>Monitor</th><th class="hide-m">Last hour</th><th class="hide-m">Latency</th><th>24h</th><th class="hide-m">7d</th><th class="hide-m">Checked</th></tr></thead><tbody>
+{{range .Monitors}}<tr data-state="{{.State}}" data-s="{{.Name}} {{.ID}} {{.Target}} {{.Type}} {{.Source}}{{range .Locations}} {{.Name}}{{end}}">
+<td><span class="st {{.State}}">{{.State}}</span>{{if .Pending}} <span class="tag" title="differing results awaiting confirmation">confirming {{.Pending}}</span>{{end}}</td>
+<td class="mname"><a href="/admin/monitors/{{.ID}}">{{.Name}}</a> <span class="tag">{{.Type}}</span>{{if ne .Source "config"}}<span class="tag acc">{{.Source}}</span>{{end}}{{if gt (len .Locations) 1}}<span class="tag">{{len .Locations}} locations · q{{.Quorum}}</span>{{else}}{{range .Locations}}{{if ne .Name "local"}}<span class="tag">via {{.Name}}</span>{{end}}{{end}}{{end}}{{if .Maintenance}}<span class="tag maint">maintenance</span>{{end}}{{if .Stale}}<span class="tag stale">stale</span>{{end}}<small>{{.Target}}</small></td>
+<td class="hide-m">{{template "spark" .Spark}}</td>
+<td class="num hide-m">{{with .Last}}{{.LatencyMS}} ms{{else}}—{{end}}</td>
+<td class="num">{{pct .Uptime24h}}</td><td class="num hide-m dim">{{pct .Uptime7d}}</td>
+<td class="hide-m dim">{{with .Last}}{{ago .At}}{{else}}—{{end}}</td></tr>
+{{else}}<tr><td colspan="7" class="empty">No monitors configured.</td></tr>{{end}}
+</tbody></table><div class="empty" id="none" hidden>No monitors match.</div></div>
+<script>
+(function(){var q=document.getElementById("q"),rows=[].slice.call(document.querySelectorAll("tr[data-state]")),f="all",c=document.getElementById("count"),none=document.getElementById("none");
+try{f=localStorage.getItem("vigil.filter")||"all";q.value=localStorage.getItem("vigil.q")||""}catch(e){}
+function match(r){var s=r.dataset.state,ok=f=="all"||(f=="problem"&&(s=="down"||s=="degraded"))||(f=="up"&&s=="up")||(f=="other"&&(s=="unknown"||s=="paused"));
+ return ok&&(!q.value||r.dataset.s.toLowerCase().indexOf(q.value.toLowerCase())>=0)}
+function apply(){var n=0;rows.forEach(function(r){var m=match(r);r.hidden=!m;if(m)n++});c.textContent=n==rows.length?"":n+" of "+rows.length;none.hidden=n>0||!rows.length;
+ document.querySelectorAll(".fchip").forEach(function(b){b.setAttribute("aria-pressed",b.dataset.f==f)});try{localStorage.setItem("vigil.filter",f);localStorage.setItem("vigil.q",q.value)}catch(e){}}
+q.addEventListener("input",apply);document.querySelectorAll(".fchip").forEach(function(b){b.onclick=function(){f=b.dataset.f;apply()}});
+document.addEventListener("keydown",function(e){if(e.key=="/"&&document.activeElement!=q){e.preventDefault();q.focus()}});apply();
+setTimeout(function(){if(!document.hidden&&document.activeElement!=q)location.reload()},30000)})();
+</script>
 {{template "foot" .}}{{end}}
 
 {{define "monitor"}}{{template "head" .}}
-{{with .M}}<h1>{{.Name}} <span class="st {{.State}}" style="font-size:14px;margin-left:8px">{{.State}}</span></h1>
-<p class="meta">{{.Type}} · {{.Target}} · since {{ts .Since}} · 24h {{pct .Uptime24h}} · 7d {{pct .Uptime7d}}</p>{{end}}
+{{with .M}}<div class="ph"><div><p style="margin:0 0 4px"><a href="/admin">← Monitors</a></p><h1>{{.Name}} <span class="st {{.State}}" style="font-size:14px;margin-left:8px;vertical-align:3px">{{.State}}</span></h1>
+<p><span class="tag">{{.Type}}</span>{{if ne .Source "config"}}<span class="tag acc">{{.Source}}</span>{{end}} {{.Target}} · {{.State}} since {{ts .Since}}</p></div></div>{{end}}
+<div class="tiles">
+<div class="card tile"><div class="v">{{pct .M.Uptime24h}}</div><div class="k">Uptime 24h</div></div>
+<div class="card tile"><div class="v">{{pct .M.Uptime7d}}</div><div class="k">Uptime 7 days</div></div>
+<div class="card tile"><div class="v">{{if .Stats.Checks}}{{fmtms .Stats.P50}}{{else}}—{{end}}</div><div class="k">Median latency</div></div>
+<div class="card tile"><div class="v">{{if .Stats.Checks}}{{fmtms .Stats.P95}}{{else}}—{{end}}</div><div class="k">p95 latency</div></div>
+<div class="card tile{{if .Stats.Fails}} alert{{end}}"><div class="v">{{.Stats.Fails}}<span class="dim" style="font-size:16px">/{{.Stats.Checks}}</span></div><div class="k">Failed checks 24h</div></div>
+</div>
+<h2>Latency · last 24 hours</h2>
+<div class="card">{{with .Chart}}{{if .Empty}}<div class="empty">No results yet.</div>{{else}}
+<div class="chart" id="chart" data-b="{{.Data}}" data-left="{{.Left}}" data-w="{{.W}}">
+<svg viewBox="0 0 {{.W}} {{.H}}" preserveAspectRatio="none" role="img" aria-label="Latency over the last 24 hours">
+<g class="grid">{{range .YTicks}}<line x1="{{$.Chart.Left}}" x2="{{$.Chart.W}}" y1="{{.Pos}}" y2="{{.Pos}}"/>{{end}}</g>
+{{range .YTicks}}<text class="lbl" x="{{sub $.Chart.Left 8}}" y="{{.Pos}}" text-anchor="end" dominant-baseline="middle">{{.Label}}</text>{{end}}
+{{range .XTicks}}<text class="lbl" x="{{.Pos}}" y="{{$.Chart.H}}" text-anchor="middle">{{.Label}}</text>{{end}}
+<path class="area" d="{{.Area}}"/><path class="max" d="{{.MaxLine}}"/><path class="avg" d="{{.Avg}}"/>
+{{range .Fails}}<line class="fail" x1="{{.}}" x2="{{.}}" y1="{{sub $.Chart.H (add $.Chart.Bottom 8)}}" y2="{{sub $.Chart.H $.Chart.Bottom}}"/>{{end}}
+<line class="cur" id="cur" x1="0" x2="0" y1="0" y2="{{sub .H .Bottom}}"/></svg><div class="readout" id="ro"></div></div>
+<div class="legendc"><span><i></i>average</span><span><i style="opacity:.35"></i>max</span><span><i style="background:var(--down);height:8px;width:3px"></i>failed checks</span>{{if .Clipped}}<span>· spikes above the scale are clipped — hover for exact values</span>{{end}}</div>{{end}}{{end}}</div>
+<script>
+(function(){var c=document.getElementById("chart");if(!c)return;var b=JSON.parse(c.dataset.b),L=+c.dataset.left,W=+c.dataset.w,svg=c.querySelector("svg"),ro=document.getElementById("ro"),cur=document.getElementById("cur");
+function move(e){var r=svg.getBoundingClientRect(),x=(e.clientX-r.left)/r.width*W;if(x<L){hide();return}var i=Math.max(0,Math.min(b.length-1,Math.floor((x-L)/(W-L)*b.length))),d=b[i];
+ cur.setAttribute("x1",x);cur.setAttribute("x2",x);cur.style.opacity=1;
+ ro.innerHTML="<b>"+d.t+"</b><br>"+(d.n?"avg "+d.avg+" ms · max "+d.max+" ms":"no successful checks")+(d.fails?"<br><span style='color:#f87171'>"+d.fails+" failed</span>":"");
+ ro.style.opacity=1;var px=e.clientX-c.getBoundingClientRect().left;ro.style.left=Math.min(px+12,c.clientWidth-ro.offsetWidth-4)+"px";ro.style.top="10px"}
+function hide(){ro.style.opacity=0;cur.style.opacity=0}svg.addEventListener("mousemove",move);svg.addEventListener("mouseleave",hide)})();
+</script>
 {{if gt (len .M.Locations) 1}}<h2>Locations · down needs {{.M.Quorum}} of {{len .M.Locations}}</h2>
-<div class="card wrap"><table><tr><th>Location</th><th>State</th><th>Last result</th></tr>
-{{range .M.Locations}}<tr><td>{{.Name}}{{if .Stale}}<span class="tag stale">offline</span>{{end}}</td><td><span class="st {{.State}}">{{.State}}</span></td><td class="msg">{{with .Last}}{{.LatencyMS}} ms · {{.Message}} · {{ago .At}}{{else}}—{{end}}</td></tr>{{end}}
-</table></div>{{end}}
-<h2>Latency · last 24h</h2>
-<div class="card">{{if .Chart.Empty}}<div class="empty">No results yet.</div>{{else}}
-<svg class="chart" viewBox="0 0 1000 200" preserveAspectRatio="none">
-<polyline points="{{.Chart.Line}}" fill="none" stroke="var(--accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
-{{range .Chart.Fails}}<line x1="{{.}}" x2="{{.}}" y1="0" y2="200" stroke="var(--down)" stroke-width="2" vector-effect="non-scaling-stroke" opacity=".5"/>{{end}}
-</svg><div class="meta" style="padding:6px 12px">peak {{.Chart.MaxMS}} ms · red lines = failed checks</div>{{end}}</div>
-<h2>Incidents</h2>
-<div class="card">{{range .Incidents}}<div class="inc"><h3>#{{.ID}} {{.Title}}</h3><div class="meta">{{.Status}} · started {{ts .StartedAt}}{{with .ResolvedAt}} · resolved {{ts .}}{{end}} · cause: {{.Cause}}</div></div>{{else}}<div class="empty">No incidents.</div>{{end}}</div>
-<h2>Recent results</h2>
-<div class="card wrap"><table><tr><th>Time</th><th>Location</th><th>Status</th><th>Latency</th><th>Message</th></tr>
-{{range .Recent}}<tr><td>{{ts .At}}</td><td>{{.Location}}</td><td><span class="st {{.Status}}">{{.Status}}</span></td><td class="num">{{.Latency.Milliseconds}} ms</td><td class="msg">{{.Message}}</td></tr>{{end}}
-</table></div>
+<div class="tiles">{{range .M.Locations}}<div class="card tile"><div class="k" style="margin:0 0 6px">{{.Name}}{{if .Stale}} <span class="tag stale">offline</span>{{end}}</div><span class="st {{.State}}">{{.State}}</span>
+<div class="dim" style="font-size:12.5px;margin-top:4px">{{with .Last}}{{.LatencyMS}} ms · {{ago .At}}{{else}}no results{{end}}</div></div>{{end}}</div>{{end}}
+<div class="grid2">
+<div><h2>Incidents</h2><div class="card">{{range .Incidents}}<div class="inc"><h3><a href="/admin/incidents">#{{.ID}} {{.Title}}</a></h3><div class="meta">{{if .ResolvedAt}}resolved · lasted {{since .StartedAt .ResolvedAt}}{{else}}<b style="color:var(--down)">open</b>{{end}} · {{ts .StartedAt}}{{with .AckedBy}} · acked by {{.}}{{end}}</div><div class="meta">{{.Cause}}</div></div>{{else}}<div class="empty">No incidents.</div>{{end}}</div></div>
+<div><h2>Recent results</h2><div class="card wrap"><table><thead><tr><th>Time</th><th>Where</th><th>Result</th><th>Latency</th></tr></thead><tbody>
+{{range .Recent}}<tr><td class="dim">{{ts .At}}</td><td class="dim">{{.Location}}</td><td><span class="st {{.Status}}">{{.Status}}</span>{{if ne .Status "up"}}<div class="dim" style="font-size:12px;white-space:normal;max-width:260px">{{.Message}}</div>{{end}}</td><td class="num">{{.Latency.Milliseconds}} ms</td></tr>{{end}}
+</tbody></table></div></div></div>
 {{template "foot" .}}{{end}}
+
+{{define "inc"}}<div class="inc"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><h3>#{{.I.ID}} {{.I.Title}}</h3><span>{{if .I.ResolvedAt}}<span class="tag">resolved</span>{{else}}<span class="tag" style="background:var(--down-soft);color:var(--down);border-color:transparent">{{.I.Status}}</span>{{end}}{{if .I.AckedAt}}<span class="tag acc">acked · {{.I.AckedBy}}</span>{{end}}</span></div>
+<div class="meta">impact {{.I.Impact}} · {{if .I.MonitorID}}automatic ({{.I.MonitorID}}){{else}}declared{{end}}{{with .I.Components}} · {{join . ", "}}{{else}} · <b>private</b>{{end}} · started {{ts .I.StartedAt}}{{with .I.ResolvedAt}} · lasted {{since $.I.StartedAt .}}{{end}}</div>
+<ol class="tl">{{range .I.Updates}}<li><b>{{.Status}}</b> {{.Message}} <span class="dim">· {{ts .At}}{{with .Actor}} · {{.}}{{end}}</span></li>{{end}}</ol>
+{{if and (not .I.ResolvedAt) (.Me.Can "incidents:write")}}<div class="acts">{{if not .I.AckedAt}}<form method="post" action="/admin/incidents/{{.I.ID}}/ack"><button class="btn sm primary">Acknowledge</button></form>{{end}}
+<details class="form" style="flex-basis:100%"><summary class="btn sm">Post update</summary><form class="box" method="post" action="/admin/incidents/{{.I.ID}}">
+<div class="grid2"><label>Status<select name="status">{{range .Statuses}}<option>{{.}}</option>{{end}}</select></label><label>Rename (optional)<input name="title" maxlength="200" placeholder="{{.I.Title}}"></label></div>
+<label>Public message<textarea name="message" required maxlength="5000"></textarea></label><div><button class="btn primary">Post update</button></div></form></details></div>{{end}}
+</div>{{end}}
 
 {{define "incidents"}}{{template "head" .}}
-<h1>Incidents</h1>
-{{with .Error}}<div class="err">{{.}}</div>{{end}}
-<div class="card">
-{{range .Incidents}}<div class="inc">
-<h3>#{{.ID}} {{.Title}}</h3>
-<div class="meta">{{.Status}}{{if .AckedAt}} · <b>acknowledged</b> by {{.AckedBy}}{{end}} · impact {{.Impact}} · {{if .MonitorID}}auto (monitor {{.MonitorID}}){{else}}declared manually{{end}}{{with .Components}} · {{join . ", "}}{{else}} · <b>not public</b>{{end}} · started {{ts .StartedAt}}{{with .ResolvedAt}} · resolved {{ts .}}{{end}}</div>
-{{range .Updates}}<div class="upd"><b>{{.Status}}</b> {{.Message}} <span class="meta">{{ts .At}}{{with .Actor}} · {{.}}{{end}}</span></div>{{end}}
-{{if and (not .ResolvedAt) ($.Me.Can "incidents:write")}}{{if not .AckedAt}}<form method="post" action="/admin/incidents/{{.ID}}/ack" style="margin:10px 0 0"><button class="primary" style="padding:6px 12px">Acknowledge</button></form>{{end}}
-<details><summary>Post update</summary>
-<form class="box" method="post" action="/admin/incidents/{{.ID}}">
-<div class="grid"><label>Status<select name="status">{{range $.Statuses}}<option>{{.}}</option>{{end}}</select></label>
-<label>Rename (optional)<input name="title" maxlength="200" placeholder="{{.Title}}"></label></div>
-<label>Public message<textarea name="message" required maxlength="5000"></textarea></label>
-<button class="primary">Post update</button></form></details>{{end}}
-</div>{{else}}<div class="empty">No incidents in the last 30 days.</div>{{end}}
-</div>
-{{if .Me.Can "incidents:write"}}<h2>Declare an incident</h2>
-<div class="card"><form class="box" method="post" action="/admin/incidents">
-<div class="grid"><label>Title<input name="title" required maxlength="200" placeholder="Elevated error rates on API"></label>
-<label>Impact<select name="impact"><option value="degraded">degraded</option><option value="down">outage</option><option value="none">none (informational)</option></select></label></div>
+<div class="ph"><div><h1>Incidents</h1><p>Last 30 days</p></div>{{if .Me.Can "incidents:write"}}<a class="btn primary" href="#declare">Declare incident</a>{{end}}</div>
+{{with .Error}}<div class="flash err">{{.}}</div>{{end}}
+
+{{if .OpenIncs}}<h2>Open</h2><div class="card open-inc">{{range .OpenIncs}}{{template "inc" dict "I" . "Me" $.Me "Statuses" $.Statuses}}{{end}}</div>{{end}}
+<h2>History</h2><div class="card">{{range .Closed}}{{template "inc" dict "I" . "Me" $.Me "Statuses" $.Statuses}}{{else}}<div class="empty">No resolved incidents in the last 30 days.</div>{{end}}</div>
+{{if .Me.Can "incidents:write"}}<h2 id="declare">Declare an incident</h2>
+<div class="card pad"><form class="box" style="padding:0" method="post" action="/admin/incidents">
+<div class="grid2"><label>Title<input name="title" required maxlength="200" placeholder="Elevated error rates on the API"></label>
+<label>Impact<select name="impact"><option value="degraded">Degraded</option><option value="down">Outage</option><option value="none">Informational</option></select></label></div>
 <label>Affected components<div class="checks">{{range .Components}}<label><input type="checkbox" name="components" value="{{.ID}}">{{.Name}}</label>{{end}}</div></label>
 <label>First public update<textarea name="message" maxlength="5000" placeholder="We are investigating reports of…"></textarea></label>
-<button class="primary">Declare incident</button>
-</form></div>{{end}}
+<div><button class="btn primary">Declare incident</button></div></form></div>{{end}}
 {{template "foot" .}}{{end}}
 
-{{define "confirm"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>{{.Title}}</title>
-<style>:root{--bg:#f6f7f9;--card:#fff;--fg:#0f172a;--line:#e2e8f0;--accent:#4f46e5;--muted:#64748b}@media (prefers-color-scheme:dark){:root{--bg:#0a0c10;--card:#12151b;--fg:#e8edf4;--line:#232833;--accent:#818cf8;--muted:#8b95a7}}
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif;padding:16px}
-.box{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:24px;width:100%;max-width:440px;display:grid;gap:12px}
-h1{margin:0;font-size:18px}p{margin:0;color:var(--muted)}button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:10px;font:inherit;font-weight:600;cursor:pointer}</style></head><body><div class="box"><h1>{{.Title}} updates</h1>
-{{if not .Sub}}<p>This link has expired or was already used.</p>
-{{else if .Sub.ConfirmedAt}}<p>✅ You're subscribed. We'll email you when incidents are posted or updated.</p>
-{{else}}<p>Confirm that {{.Sub.Address}} should receive incident updates.</p><form method="post"><button>Confirm subscription</button></form>{{end}}
+{{define "system"}}{{template "head" .}}
+<div class="ph"><div><h1>System</h1><p>This deployment's configuration (read-only — change it in vigil.yaml)</p></div></div>
+{{with .Flash}}<div class="flash">{{.}}</div>{{end}}
+<div class="grid2">
+<div><h2>Node</h2><div class="card pad"><dl class="kv"><dt>Node</dt><dd>{{.Node}}</dd><dt>Version</dt><dd>{{.Version}}</dd><dt>Database</dt><dd>{{.DB}}{{if .HA}} · high availability (this node leads){{end}}</dd></dl></div></div>
+<div><h2>Access</h2><div class="card pad"><dl class="kv">{{range .Keys}}<dt>{{.Name}}</dt><dd>{{range .Scopes}}<span class="tag">{{.}}</span>{{end}}</dd>{{end}}
+{{if .Auth.Header}}<dt>SSO</dt><dd>header <code>{{.Auth.Header}}</code> · {{len .Auth.Users}} rule{{if ne (len .Auth.Users) 1}}s{{end}}</dd>{{end}}</dl></div></div>
+</div>
+<h2>Notifiers</h2><div class="card wrap"><table><tbody>
+{{range .Notifiers}}<tr><td><b>{{.}}</b></td><td style="text-align:right">{{if $.Me.Can "admin"}}<form method="post" action="/admin/notifiers/{{.}}/test" style="margin:0"><button class="btn sm">Send test</button></form>{{end}}</td></tr>{{else}}<tr><td class="empty">No notifiers configured.</td></tr>{{end}}
+</tbody></table></div>
+{{with .Escalations}}<h2>Escalation policies</h2><div class="card">{{range .}}<div class="inc"><h3>{{.Name}}</h3><ol class="tl">{{range $i, $s := .Steps}}<li><b>{{if $i}}after {{$s.After.D}}{{else}}immediately{{end}}</b> → {{join $s.Notify ", "}}</li>{{end}}</ol></div>{{end}}</div>{{end}}
+<h2>Agents</h2><div class="card wrap"><table><thead><tr><th>Agent</th><th>Status</th><th>Last seen</th><th>Monitors</th></tr></thead><tbody>
+{{range .Agents}}<tr><td><b>{{.Name}}</b></td><td><span class="st {{if .Online}}up{{else}}down{{end}}">{{if .Online}}online{{else}}offline{{end}}</span></td><td class="dim">{{ago .LastSeen}}</td><td class="num">{{.Monitors}}</td></tr>{{else}}<tr><td colspan="4" class="empty">No agents configured.</td></tr>{{end}}
+</tbody></table></div>
+{{template "foot" .}}{{end}}
+
+{{define "minipage"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>{{.Title}}</title>{{template "css" .}}
+<style>body{min-height:100vh;display:grid;place-items:center;padding:16px}.box{width:100%;max-width:440px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:26px;display:grid;gap:14px;box-shadow:var(--shadow)}
+.box h1{margin:0;font-size:18px}.box p{margin:0;color:var(--muted)}.box .btn{justify-content:center;padding:10px}.box form{display:grid;gap:10px}</style></head><body><div class="box">{{end}}
+
+{{define "ack"}}{{template "minipage" .}}<h1>{{.Inc.Title}}</h1>
+{{if .Inc.ResolvedAt}}<p>This incident is already resolved.</p>
+{{else if .Inc.AckedAt}}<p>{{if .Done}}✅ Acknowledged. Escalation and reminders stopped; everyone already paged has been told.{{else}}Already acknowledged by {{.Inc.AckedBy}}.{{end}}</p>
+{{else}}<p>Started {{ts .Inc.StartedAt}}. Acknowledging stops escalation and reminders and tells everyone already paged that you're on it.</p>
+<form method="post"><input name="name" maxlength="80" placeholder="Your name" value="{{.Who}}" {{if .Who}}readonly{{else}}required{{end}}><button class="btn primary">Acknowledge</button></form>{{end}}
 </div></body></html>{{end}}
 
-{{define "unsubscribe"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>{{.Title}}</title>
-<style>:root{--bg:#f6f7f9;--card:#fff;--fg:#0f172a;--line:#e2e8f0;--accent:#4f46e5;--muted:#64748b}@media (prefers-color-scheme:dark){:root{--bg:#0a0c10;--card:#12151b;--fg:#e8edf4;--line:#232833;--accent:#818cf8;--muted:#8b95a7}}
-body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif;padding:16px}
-.box{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:24px;width:100%;max-width:440px;display:grid;gap:12px}
-h1{margin:0;font-size:18px}p{margin:0;color:var(--muted)}button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:10px;font:inherit;font-weight:600;cursor:pointer}</style></head><body><div class="box"><h1>{{.Title}} updates</h1>
+{{define "confirm"}}{{template "minipage" .}}<h1>{{.Title}} updates</h1>
+{{if not .Sub}}<p>This link has expired or was already used.</p>
+{{else if .Sub.ConfirmedAt}}<p>✅ You're subscribed. We'll email you when incidents are posted or updated.</p>
+{{else}}<p>Confirm that {{.Sub.Address}} should receive incident updates.</p><form method="post"><button class="btn primary">Confirm subscription</button></form>{{end}}
+</div></body></html>{{end}}
+
+{{define "unsubscribe"}}{{template "minipage" .}}<h1>{{.Title}} updates</h1>
 {{if .Done}}<p>You've been unsubscribed. No more emails.</p>
 {{else if not .Sub}}<p>This address is not subscribed.</p>
-{{else}}<p>Stop sending incident updates to {{.Sub.Address}}?</p><form method="post"><button>Unsubscribe</button></form>{{end}}
+{{else}}<p>Stop sending incident updates to {{.Sub.Address}}?</p><form method="post"><button class="btn primary">Unsubscribe</button></form>{{end}}
 </div></body></html>{{end}}

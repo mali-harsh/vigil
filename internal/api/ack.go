@@ -128,5 +128,5 @@ func (s *Server) notifierTestForm(w http.ResponseWriter, r *http.Request) {
 	} else if err := s.Notifiers.Test(r.Context(), name); err != nil {
 		msg = name + " failed: " + err.Error()
 	}
-	http.Redirect(w, r, "/admin?flash="+urlQueryEscape(msg), http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/system?flash="+urlQueryEscape(msg), http.StatusSeeOther)
 }

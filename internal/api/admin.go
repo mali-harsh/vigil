@@ -43,8 +43,28 @@ var adminTmpl = template.Must(template.New("admin.html").Funcs(template.FuncMap{
 		}
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	},
-	"ts":   func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05Z") },
-	"join": strings.Join,
+	"ts":    func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05Z") },
+	"join":  strings.Join,
+	"fmtms": fmtMS,
+	"add":   func(a, b float64) float64 { return a + b },
+	"sub":   func(a, b float64) float64 { return a - b },
+	"dict": func(kv ...any) map[string]any {
+		m := map[string]any{}
+		for i := 0; i+1 < len(kv); i += 2 {
+			m[kv[i].(string)] = kv[i+1]
+		}
+		return m
+	},
+	"since": func(a time.Time, b *time.Time) string {
+		if b == nil {
+			return ""
+		}
+		d := b.Sub(a).Round(time.Minute)
+		if d < time.Hour {
+			return fmt.Sprintf("%dm", int(d.Minutes()))
+		}
+		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+	},
 }).ParseFS(adminFS, "admin.html"))
 
 func (s *Server) adminRoutes(mux *http.ServeMux) {
@@ -54,6 +74,7 @@ func (s *Server) adminRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /admin", s.ui("read", s.dashboard))
 	mux.Handle("GET /admin/monitors/{id}", s.ui("read", s.monitorPage))
 	mux.Handle("GET /admin/incidents", s.ui("read", s.incidentsPage))
+	mux.Handle("GET /admin/system", s.ui("read", s.systemPage))
 	mux.Handle("POST /admin/incidents", s.ui("incidents:write", s.incidentCreateForm))
 	mux.Handle("POST /admin/incidents/{id}", s.ui("incidents:write", s.incidentUpdateForm))
 	mux.Handle("POST /admin/incidents/{id}/ack", s.ui("incidents:write", s.incidentAckForm))
@@ -97,8 +118,11 @@ func sameOrigin(r *http.Request) bool {
 func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, data map[string]any) {
 	data["Title"] = s.Cfg.StatusPage.Title
 	data["Me"] = principalFrom(r.Context())
+	if open, err := s.Store.OpenIncidents(r.Context()); err == nil {
+		data["OpenCount"] = len(open) // sidebar badge
+	}
 	var buf bytes.Buffer
-	if err := adminTmpl.ExecuteTemplate(&buf, name, data); err != nil {
+	if err := s.tmpl.ExecuteTemplate(&buf, name, data); err != nil {
 		s.fail(w, err)
 		return
 	}
@@ -153,6 +177,18 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 
 // ---- pages ----
 
+type row struct {
+	monitorOut
+	Spark spark
+}
+
+func (s *Server) loc() *time.Location {
+	if l := s.Cfg.StatusPage.Location; l != nil {
+		return l
+	}
+	return time.UTC
+}
+
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	ms, err := s.withUptime(r.Context())
 	if err != nil {
@@ -168,21 +204,33 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 		return ms[i].Name < ms[j].Name
 	})
+	now := time.Now()
+	recent, err := s.Store.Recent(r.Context(), now.Add(-time.Hour))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
 	counts := map[string]int{}
-	for _, m := range ms {
+	rows := make([]row, len(ms))
+	for i, m := range ms {
 		counts[string(m.State)]++
+		pts := recent[m.ID]
+		rows[i] = row{monitorOut: m, Spark: sparkline(pts, window(pts, now.Add(-time.Hour), now, 5*time.Minute), now, 120, 28, 40)}
 	}
 	open, err := s.Store.OpenIncidents(r.Context())
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	var notifiers []string
-	if s.Notifiers != nil {
-		notifiers = s.Notifiers.Names()
+	agentsOnline := 0
+	agents := s.Engine.Agents()
+	for _, a := range agents {
+		if a.Online {
+			agentsOnline++
+		}
 	}
-	s.render(w, r, "dashboard", map[string]any{"Monitors": ms, "Counts": counts, "Open": len(open), "Agents": s.Engine.Agents(),
-		"Notifiers": notifiers, "Flash": r.URL.Query().Get("flash"), "Nav": "monitors"})
+	s.render(w, r, "dashboard", map[string]any{"Monitors": rows, "Counts": counts, "Open": open, "Agents": agents, "AgentsOnline": agentsOnline,
+		"Flash": r.URL.Query().Get("flash"), "Nav": "monitors"})
 }
 
 func (s *Server) monitorPage(w http.ResponseWriter, r *http.Request) {
@@ -202,11 +250,17 @@ func (s *Server) monitorPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	res, err := s.Store.Results(r.Context(), id, time.Now().Add(-24*time.Hour), 5000)
+	now := time.Now()
+	res, err := s.Store.Results(r.Context(), id, now.Add(-24*time.Hour), 20000)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
+	pts := make([]store.Point, len(res))
+	for i, x := range res { // newest-first → oldest-first
+		pts[len(res)-1-i] = store.Point{At: x.At, LatencyMS: x.Latency.Milliseconds(), Down: x.Status == check.Down}
+	}
+	chart, st := latencyDetail(pts, now.Add(-24*time.Hour), now, s.loc())
 	all, err := s.Store.RecentIncidents(r.Context(), 200)
 	if err != nil {
 		s.fail(w, err)
@@ -218,48 +272,31 @@ func (s *Server) monitorPage(w http.ResponseWriter, r *http.Request) {
 			incs = append(incs, inc)
 		}
 	}
-	recent := res
-	if len(recent) > 50 {
-		recent = recent[:50]
+	recentRes := res
+	if len(recentRes) > 50 {
+		recentRes = recentRes[:50]
 	}
-	s.render(w, r, "monitor", map[string]any{"M": mon, "Chart": latencyChart(res), "Recent": recent, "Incidents": incs, "Nav": "monitors"})
+	s.render(w, r, "monitor", map[string]any{"M": mon, "Chart": chart, "Stats": st, "Recent": recentRes, "Incidents": incs, "Nav": "monitors"})
 }
 
-type chart struct {
-	Line  string
-	Fails []float64
-	MaxMS int64
-	Empty bool
-}
-
-// latencyChart builds an SVG polyline (viewBox 0..1000 x 0..200) spanning
-// the results given (at most the last 24h).
-func latencyChart(res []check.Result) chart {
-	if len(res) == 0 {
-		return chart{Empty: true}
+func (s *Server) systemPage(w http.ResponseWriter, r *http.Request) {
+	var notifiers []string
+	if s.Notifiers != nil {
+		notifiers = s.Notifiers.Names()
 	}
-	end := time.Now()
-	start := res[len(res)-1].At // oldest; results are newest-first
-	if end.Sub(start) < time.Minute {
-		start = end.Add(-time.Minute)
+	type keyView struct {
+		Name   string
+		Scopes []string
 	}
-	var maxMS int64 = 1
-	for _, r := range res {
-		maxMS = max(maxMS, r.Latency.Milliseconds())
+	var keys []keyView
+	for _, k := range s.Cfg.Server.Keys() {
+		keys = append(keys, keyView{k.Name, k.Scopes}) // never the token
 	}
-	var pts []string
-	var fails []float64
-	for i := len(res) - 1; i >= 0; i-- { // results are newest-first
-		r := res[i]
-		x := float64(r.At.Sub(start)) / float64(end.Sub(start)) * 1000
-		if r.Status == check.Down {
-			fails = append(fails, x)
-			continue
-		}
-		y := 195 - float64(r.Latency.Milliseconds())/float64(maxMS)*185
-		pts = append(pts, fmt.Sprintf("%.1f,%.1f", x, y))
-	}
-	return chart{Line: strings.Join(pts, " "), Fails: fails, MaxMS: maxMS}
+	s.render(w, r, "system", map[string]any{
+		"Notifiers": notifiers, "Agents": s.Engine.Agents(), "Keys": keys, "Auth": s.Cfg.Server.Auth,
+		"Escalations": s.Cfg.Escalations, "Node": s.Node, "Version": s.Version, "DB": s.Cfg.Server.Database.Driver,
+		"HA": s.Cfg.Server.Database.Driver == "postgres", "Flash": r.URL.Query().Get("flash"), "Nav": "system",
+	})
 }
 
 func (s *Server) incidentsPage(w http.ResponseWriter, r *http.Request) {
@@ -282,8 +319,16 @@ func (s *Server) incidentsPage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	var openIncs, closed []store.Incident
+	for _, inc := range incs {
+		if inc.ResolvedAt == nil {
+			openIncs = append(openIncs, inc)
+		} else {
+			closed = append(closed, inc)
+		}
+	}
 	s.render(w, r, "incidents", map[string]any{
-		"Incidents": incs, "Components": comps, "Nav": "incidents",
+		"OpenIncs": openIncs, "Closed": closed, "Components": comps, "Nav": "incidents",
 		"Error": r.URL.Query().Get("error"), "Statuses": []string{store.Investigating, store.Identified, store.Monitoring, store.Resolved},
 	})
 }

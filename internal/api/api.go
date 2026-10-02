@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html/template"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -46,12 +47,17 @@ type Server struct {
 	page *statuspage.Builder
 	auth *Authn
 
-	subPerIP, subGlobal *limiter // sign-up abuse limits
+	subPerIP, subGlobal *limiter           // sign-up abuse limits
+	tmpl                *template.Template // admin templates bound to this deployment's timezone
 }
 
 func (s *Server) Handler() http.Handler {
 	s.page = &statuspage.Builder{Cfg: s.Cfg, Engine: s.Engine, Store: s.Store}
 	s.auth = NewAuthn(s.Cfg)
+	loc := s.loc() // admin shows times in the deployment's timezone, like the status page
+	s.tmpl = template.Must(adminTmpl.Clone()).Funcs(template.FuncMap{
+		"ts": func(t time.Time) string { return t.In(loc).Format("Jan 2, 15:04:05") },
+	})
 	s.subPerIP = newLimiter(5, time.Hour)
 	s.subGlobal = newLimiter(300, time.Hour) // caps confirmation mail even from many IPs
 	mux := http.NewServeMux()

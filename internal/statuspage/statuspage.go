@@ -5,6 +5,7 @@ package statuspage
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/mali-harsh/vigil/internal/config"
@@ -62,6 +63,13 @@ type Page struct {
 	Upcoming    []maintenance.Occurrence `json:"upcoming_maintenance"`
 	GeneratedAt time.Time                `json:"generated_at"`
 	Timezone    string                   `json:"timezone"`
+	Accent      string                   `json:"-"`
+	PastByDay   []DayIncidents           `json:"-"`
+}
+
+type DayIncidents struct {
+	Day       string // "Oct 1"
+	Incidents []Incident
 }
 
 type Row struct {
@@ -76,9 +84,25 @@ type Row struct {
 }
 
 type Bar struct {
-	Day    string   `json:"day"`
-	Uptime *float64 `json:"uptime"`
-	Level  string   `json:"level"` // none | up | minor | major | maint
+	Day       string   `json:"day"`
+	Uptime    *float64 `json:"uptime"`
+	Level     string   `json:"level"`               // none | up | blip | minor | major | maint
+	DownMin   int      `json:"down_minutes"`        // estimated from the share of failed checks
+	Incidents []string `json:"incidents,omitempty"` // public incident titles touching this day
+}
+
+// Bar levels: 100% up; ≥99.9% a blip (shown subtly — a failed check or two is
+// not an outage); ≥99% minor; below that major.
+func level(pct float64) string {
+	switch {
+	case pct >= 100:
+		return "up"
+	case pct >= 99.9:
+		return "blip"
+	case pct >= 99:
+		return "minor"
+	}
+	return "major"
 }
 
 type Incident struct {
@@ -131,10 +155,12 @@ func (b *Builder) Build(ctx context.Context, now time.Time) (*Page, error) {
 	}
 	collect(comps)
 
-	incs, err := b.Store.IncidentsSince(ctx, now.Add(-historyWindow))
+	// 90 days of incidents feed the bar tooltips; the list shows the last 14.
+	incs, err := b.Store.IncidentsSince(ctx, now.AddDate(0, 0, -Days))
 	if err != nil {
 		return nil, err
 	}
+	dayTitles := map[string]map[string][]string{} // component → day → incident titles
 	// manual open incidents raise the state of the components they name
 	impact := map[string]string{}
 	for _, inc := range incs {
@@ -153,12 +179,29 @@ func (b *Builder) Build(ctx context.Context, now time.Time) (*Page, error) {
 				impact[c] = worse(impact[c], map[string]string{"down": Outage, "degraded": Degraded}[inc.Impact])
 			}
 		}
-		if inc.ResolvedAt == nil {
+		end := now
+		if inc.ResolvedAt != nil {
+			end = *inc.ResolvedAt
+		}
+		// every local day the incident touched, start day through end day
+		for d, last := midnight(inc.StartedAt, loc), midnight(end, loc); !d.After(last); d = d.AddDate(0, 0, 1) {
+			key := d.Format(time.DateOnly)
+			for _, c := range inc.Components {
+				if dayTitles[c] == nil {
+					dayTitles[c] = map[string][]string{}
+				}
+				dayTitles[c][key] = append(dayTitles[c][key], inc.Title)
+			}
+		}
+		switch {
+		case inc.ResolvedAt == nil:
 			p.Active = append(p.Active, pub)
-		} else {
+		case now.Sub(*inc.ResolvedAt) <= historyWindow:
 			p.Past = append(p.Past, pub)
 		}
 	}
+	p.PastByDay = byDay(p.Past, loc)
+	p.Accent = b.Cfg.StatusPage.Accent
 
 	state := map[string]string{}
 	for _, v := range b.Engine.Views() {
@@ -188,6 +231,15 @@ func (b *Builder) Build(ctx context.Context, now time.Time) (*Page, error) {
 		}
 		r.Status = worse(r.Status, impact[c.ID])
 		r.Bars, r.Uptime = bars(days, ids, daily)
+		for i := range r.Bars { // incidents on this component (or, for a group, its children)
+			b := &r.Bars[i]
+			b.Incidents = uniq(titlesFor(c, b.Day, dayTitles))
+			// a day with a public incident is never shown as clean, even when the
+			// checks were fine (manually declared incidents have no check data)
+			if len(b.Incidents) > 0 && (b.Level == "up" || b.Level == "blip" || b.Level == "none") {
+				b.Level = "minor"
+			}
+		}
 		return r
 	}
 	p.Status = NoData
@@ -236,6 +288,42 @@ func componentNames(o maintenance.Occurrence, names map[string]string, cfg *conf
 		}
 	}
 	return orEmpty(out)
+}
+
+func midnight(t time.Time, loc *time.Location) time.Time {
+	y, m, d := t.In(loc).Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, loc)
+}
+
+func titlesFor(c config.Component, day string, m map[string]map[string][]string) []string {
+	out := append([]string(nil), m[c.ID][day]...)
+	for _, ch := range c.Components {
+		out = append(out, titlesFor(ch, day, m)...)
+	}
+	return out
+}
+
+func uniq(s []string) []string {
+	var out []string
+	for _, v := range s {
+		if !slices.Contains(out, v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// byDay groups resolved incidents by the local day they started, newest first.
+func byDay(incs []Incident, loc *time.Location) []DayIncidents {
+	var out []DayIncidents
+	for _, inc := range incs { // already newest first
+		d := inc.StartedAt.In(loc).Format("Jan 2, 2006")
+		if len(out) == 0 || out[len(out)-1].Day != d {
+			out = append(out, DayIncidents{Day: d})
+		}
+		out[len(out)-1].Incidents = append(out[len(out)-1].Incidents, inc)
+	}
+	return out
 }
 
 func leafMonitors(c config.Component) []string {
@@ -290,12 +378,9 @@ func bars(days, ids []string, daily map[string]map[string]store.DayStat) ([]Bar,
 		case b.Uptime == nil && maint:
 			b.Level = "maint"
 		case b.Uptime == nil:
-		case *b.Uptime >= 100:
-			b.Level = "up"
-		case *b.Uptime >= 99:
-			b.Level = "minor"
 		default:
-			b.Level = "major"
+			b.Level = level(*b.Uptime)
+			b.DownMin = int((100 - *b.Uptime) / 100 * 1440)
 		}
 		out[i] = b
 	}

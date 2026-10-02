@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -16,6 +17,7 @@ type StatusPage struct {
 	Timezone    string      `yaml:"timezone"` // day boundaries for the 90-day bars; default UTC
 	ExportDir   string      `yaml:"export_dir"`
 	Subscribe   bool        `yaml:"subscribe"` // email sign-up form (needs server.smtp + server.public_url)
+	Accent      string      `yaml:"accent"`    // brand colour for links/buttons, e.g. "#4f46e5"
 	Components  []Component `yaml:"components"`
 
 	Location *time.Location `yaml:"-"`
@@ -43,6 +45,8 @@ type Maintenance struct {
 	Monitors    []string  `yaml:"monitors"`
 	Components  []string  `yaml:"components"` // expands to every monitor inside
 }
+
+var hexColor = regexp.MustCompile(`^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
 
 // Leaves returns all leaf components, depth-first.
 func (s StatusPage) Leaves() []Component {
@@ -173,6 +177,9 @@ func (c *Config) validateStatusPage() error {
 				errs = append(errs, fmt.Errorf("%s: unknown component %q", p, cid))
 			}
 		}
+	}
+	if sp.Accent != "" && !hexColor.MatchString(sp.Accent) {
+		errs = append(errs, fmt.Errorf("status_page.accent: %q must be a hex colour like #4f46e5", sp.Accent))
 	}
 	if sp.Subscribe && (c.Server.SMTP.Host == "" || c.Server.PublicURL == "") {
 		errs = append(errs, errors.New("status_page.subscribe needs server.smtp and server.public_url (confirmation links point there)"))
