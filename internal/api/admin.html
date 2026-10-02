@@ -1,0 +1,120 @@
+{{define "head"}}<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vigil admin · {{.Title}}</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#0f172a;--muted:#64748b;--line:#e2e8f0;--soft:#f1f5f9;--accent:#4f46e5;
+--up:#16a34a;--deg:#f59e0b;--down:#dc2626;--maint:#3b82f6;--unk:#94a3b8}
+@media (prefers-color-scheme:dark){:root{--bg:#0a0c10;--card:#12151b;--fg:#e8edf4;--muted:#8b95a7;--line:#232833;--soft:#181c24;--accent:#818cf8}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
+nav{display:flex;align-items:center;gap:20px;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--card);flex-wrap:wrap}
+nav b{font-size:15px}nav a{color:var(--muted);text-decoration:none}nav a.on{color:var(--fg);font-weight:600}nav .sp{flex:1}
+nav form{margin:0}nav button{background:none;border:0;color:var(--muted);cursor:pointer;font:inherit;padding:0}
+main{max-width:1100px;margin:0 auto;padding:24px 16px 48px}
+h1{font-size:20px;margin:0 0 16px}h2{font-size:15px;margin:24px 0 10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.stats{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px;min-width:120px}
+.stat b{display:block;font-size:22px;font-variant-numeric:tabular-nums}.stat span{color:var(--muted);font-size:12px}
+.wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px 14px;border-top:1px solid var(--line);white-space:nowrap}
+th{border-top:0;color:var(--muted);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+td.num{font-variant-numeric:tabular-nums}td.msg{white-space:normal;color:var(--muted);max-width:360px;overflow-wrap:anywhere}
+a{color:var(--accent)}
+.st{display:inline-flex;align-items:center;gap:6px;font-weight:550}
+.st::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--unk)}
+.st.up::before{background:var(--up)}.st.degraded::before{background:var(--deg)}.st.down::before{background:var(--down)}
+.tag{font-size:11px;padding:1px 6px;border-radius:4px;background:var(--soft);color:var(--muted);margin-left:6px}
+.tag.maint{background:var(--maint);color:#fff}
+svg.chart{width:100%;height:200px;display:block;background:var(--soft)}
+form.box{padding:16px;display:grid;gap:10px}
+label{font-size:12px;color:var(--muted);display:grid;gap:4px}
+input,select,textarea{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg)}
+textarea{min-height:70px;resize:vertical}
+button.primary{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px 14px;font:inherit;font-weight:600;cursor:pointer;justify-self:start}
+.checks{display:flex;flex-wrap:wrap;gap:6px 14px}.checks label{display:flex;flex-direction:row;align-items:center;gap:6px;color:var(--fg);font-size:14px}
+.err{background:#fee2e2;color:#991b1b;padding:10px 14px;border-radius:8px;margin-bottom:16px}
+.inc{padding:16px;border-top:1px solid var(--line)}.inc:first-child{border-top:0}
+.inc h3{margin:0 0 4px;font-size:15px}.meta{color:var(--muted);font-size:12px}
+.upd{margin:8px 0 0;font-size:13px}.upd b{text-transform:capitalize}
+details summary{cursor:pointer;color:var(--accent);margin-top:10px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:640px){.grid{grid-template-columns:1fr}}
+.empty{padding:16px;color:var(--muted)}
+</style></head><body>
+<nav><b>vigil</b><a href="/admin" class="{{if eq .Nav "monitors"}}on{{end}}">Monitors</a><a href="/admin/incidents" class="{{if eq .Nav "incidents"}}on{{end}}">Incidents</a><a href="/" target="_blank">Status page ↗</a><span class="sp"></span>
+<form method="post" action="/admin/logout"><button>Log out</button></form></nav><main>{{end}}
+
+{{define "foot"}}</main></body></html>{{end}}
+
+{{define "login"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>vigil · sign in</title>
+<style>:root{--bg:#f6f7f9;--card:#fff;--fg:#0f172a;--line:#e2e8f0;--accent:#4f46e5}@media (prefers-color-scheme:dark){:root{--bg:#0a0c10;--card:#12151b;--fg:#e8edf4;--line:#232833;--accent:#818cf8}}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,sans-serif;padding:16px}
+form{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:24px;width:100%;max-width:360px;display:grid;gap:12px}
+h1{margin:0;font-size:18px}input{font:inherit;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--fg)}
+button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:10px;font:inherit;font-weight:600;cursor:pointer}.e{color:#dc2626}</style></head>
+<body><form method="post" action="/admin/login"><h1>vigil admin</h1>{{if .Error}}<div class="e">Invalid token.</div>{{end}}
+<input type="password" name="token" placeholder="Admin token" autocomplete="current-password" required autofocus><button>Sign in</button></form></body></html>{{end}}
+
+{{define "dashboard"}}{{template "head" .}}
+<h1>Monitors</h1>
+<div class="stats">
+<div class="stat"><b>{{len .Monitors}}</b><span>monitors</span></div>
+<div class="stat"><b style="color:var(--up)">{{index .Counts "up"}}</b><span>up</span></div>
+<div class="stat"><b style="color:var(--deg)">{{index .Counts "degraded"}}</b><span>degraded</span></div>
+<div class="stat"><b style="color:var(--down)">{{index .Counts "down"}}</b><span>down</span></div>
+<div class="stat"><b>{{.Open}}</b><span>open incidents</span></div>
+</div>
+<div class="card wrap"><table>
+<tr><th>Monitor</th><th>State</th><th>Since</th><th>Latency</th><th>24h</th><th>7d</th><th>Last result</th></tr>
+{{range .Monitors}}<tr>
+<td><a href="/admin/monitors/{{.ID}}">{{.Name}}</a><span class="tag">{{.Type}}</span>{{if .Maintenance}}<span class="tag maint">maintenance</span>{{end}}</td>
+<td><span class="st {{.State}}">{{.State}}</span>{{if .Pending}}<span class="tag">confirming {{.Pending}}</span>{{end}}</td>
+<td>{{ago .Since}}</td>
+<td class="num">{{with .Last}}{{.LatencyMS}} ms{{else}}—{{end}}</td>
+<td class="num">{{pct .Uptime24h}}</td><td class="num">{{pct .Uptime7d}}</td>
+<td class="msg">{{with .Last}}{{.Message}} · {{ago .At}}{{end}}</td>
+</tr>{{else}}<tr><td colspan="7" class="empty">No monitors configured.</td></tr>{{end}}
+</table></div>
+{{template "foot" .}}{{end}}
+
+{{define "monitor"}}{{template "head" .}}
+{{with .M}}<h1>{{.Name}} <span class="st {{.State}}" style="font-size:14px;margin-left:8px">{{.State}}</span></h1>
+<p class="meta">{{.Type}} · {{.Target}} · since {{ts .Since}} · 24h {{pct .Uptime24h}} · 7d {{pct .Uptime7d}}</p>{{end}}
+<h2>Latency · last 24h</h2>
+<div class="card">{{if .Chart.Empty}}<div class="empty">No results yet.</div>{{else}}
+<svg class="chart" viewBox="0 0 1000 200" preserveAspectRatio="none">
+<polyline points="{{.Chart.Line}}" fill="none" stroke="var(--accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+{{range .Chart.Fails}}<line x1="{{.}}" x2="{{.}}" y1="0" y2="200" stroke="var(--down)" stroke-width="2" vector-effect="non-scaling-stroke" opacity=".5"/>{{end}}
+</svg><div class="meta" style="padding:6px 12px">peak {{.Chart.MaxMS}} ms · red lines = failed checks</div>{{end}}</div>
+<h2>Incidents</h2>
+<div class="card">{{range .Incidents}}<div class="inc"><h3>#{{.ID}} {{.Title}}</h3><div class="meta">{{.Status}} · started {{ts .StartedAt}}{{with .ResolvedAt}} · resolved {{ts .}}{{end}} · cause: {{.Cause}}</div></div>{{else}}<div class="empty">No incidents.</div>{{end}}</div>
+<h2>Recent results</h2>
+<div class="card wrap"><table><tr><th>Time</th><th>Status</th><th>Latency</th><th>Message</th></tr>
+{{range .Recent}}<tr><td>{{ts .At}}</td><td><span class="st {{.Status}}">{{.Status}}</span></td><td class="num">{{.Latency.Milliseconds}} ms</td><td class="msg">{{.Message}}</td></tr>{{end}}
+</table></div>
+{{template "foot" .}}{{end}}
+
+{{define "incidents"}}{{template "head" .}}
+<h1>Incidents</h1>
+{{with .Error}}<div class="err">{{.}}</div>{{end}}
+<div class="card">
+{{range .Incidents}}<div class="inc">
+<h3>#{{.ID}} {{.Title}}</h3>
+<div class="meta">{{.Status}} · impact {{.Impact}} · {{if .MonitorID}}auto (monitor {{.MonitorID}}){{else}}declared manually{{end}}{{with .Components}} · {{join . ", "}}{{else}} · <b>not public</b>{{end}} · started {{ts .StartedAt}}{{with .ResolvedAt}} · resolved {{ts .}}{{end}}</div>
+{{range .Updates}}<div class="upd"><b>{{.Status}}</b> {{.Message}} <span class="meta">{{ts .At}}</span></div>{{end}}
+{{if not .ResolvedAt}}<details><summary>Post update</summary>
+<form class="box" method="post" action="/admin/incidents/{{.ID}}">
+<div class="grid"><label>Status<select name="status">{{range $.Statuses}}<option>{{.}}</option>{{end}}</select></label>
+<label>Rename (optional)<input name="title" maxlength="200" placeholder="{{.Title}}"></label></div>
+<label>Public message<textarea name="message" required maxlength="5000"></textarea></label>
+<button class="primary">Post update</button></form></details>{{end}}
+</div>{{else}}<div class="empty">No incidents in the last 30 days.</div>{{end}}
+</div>
+<h2>Declare an incident</h2>
+<div class="card"><form class="box" method="post" action="/admin/incidents">
+<div class="grid"><label>Title<input name="title" required maxlength="200" placeholder="Elevated error rates on API"></label>
+<label>Impact<select name="impact"><option value="degraded">degraded</option><option value="down">outage</option><option value="none">none (informational)</option></select></label></div>
+<label>Affected components<div class="checks">{{range .Components}}<label><input type="checkbox" name="components" value="{{.ID}}">{{.Name}}</label>{{end}}</div></label>
+<label>First public update<textarea name="message" maxlength="5000" placeholder="We are investigating reports of…"></textarea></label>
+<button class="primary">Declare incident</button>
+</form></div>
+{{template "foot" .}}{{end}}

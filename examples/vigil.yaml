@@ -1,0 +1,77 @@
+# vigil example config — every secret comes from env (${VAR}), never from git.
+server:
+  listen: ":8080"
+  data_dir: "./data"
+  # api_tokens: ["${VIGIL_API_TOKEN}"]       # protect /api/v1 reads
+  # admin_tokens: ["${VIGIL_ADMIN_TOKEN}"]   # enables /admin UI + write API
+  # tls:                                     # automatic HTTPS (Let's Encrypt)
+  #   domains: [status.example.com]
+  #   email: ops@example.com
+
+status_page:
+  title: Example Status
+  description: Live status of Example services
+  timezone: Asia/Kolkata      # day boundaries for the 90-day bars
+  # export_dir: ./public      # static copy every minute; sync to S3/CF Pages
+  components:                 # only monitors listed here are public
+    - name: Website
+      monitors: [website]
+    - name: Platform          # a group: its status is the worst child's
+      components:
+        - {name: API, monitors: [api-certificate, dns]}
+        - {name: Database, monitors: [postgres]}
+        - {name: Backups, monitors: [nightly-backup]}
+
+maintenance:                  # alerts silenced, excluded from uptime
+  - name: Weekly patching
+    start: 2026-10-04T02:00:00+05:30
+    duration: 1h
+    repeat: weekly            # "", daily, weekly
+    components: [platform]
+
+defaults:
+  interval: 60s
+  timeout: 10s
+  fail_threshold: 3      # consecutive failures before DOWN
+  recover_threshold: 2   # consecutive successes before UP
+  reminder_every: 30m    # repeat alert while still down (0 = never)
+  notify: [slack]
+
+notifiers:
+  - name: slack
+    type: slack           # Slack incoming webhook OR Workflow webhook (variable "text")
+    url: "${SLACK_WEBHOOK}"
+  # - name: oncall
+  #   type: webhook        # POSTs the event as JSON
+  #   url: "https://example.com/hook"
+
+monitors:
+  - name: Website
+    type: http
+    url: https://example.com
+    expect:
+      status: [200]
+      body_contains: "Example Domain"
+      max_latency: 2s      # slower = DEGRADED
+      cert_min_days: 14    # cert expiring sooner = DOWN
+
+  - name: Postgres
+    type: tcp
+    host: db.internal:5432
+
+  - name: API certificate
+    type: tls
+    host: example.com:443
+    interval: 1h
+    timeout: 15s
+    expect: {cert_min_days: 21}
+
+  - name: DNS
+    type: dns
+    host: example.com
+
+  - name: Nightly backup
+    type: push             # job calls: curl -fsS http://vigil:8080/push/<token>
+    token: "${BACKUP_PUSH_TOKEN}"
+    interval: 24h
+    grace: 1h

@@ -1,0 +1,5 @@
+/data/
+/vigil
+/dist/
+*.db
+*.db-*
