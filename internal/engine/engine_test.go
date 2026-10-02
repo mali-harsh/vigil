@@ -352,3 +352,32 @@ func TestOutageAlertedBeforeMaintenanceIsNotRepeated(t *testing.T) {
 		t.Fatalf("outage re-alerted after maintenance: %v", k)
 	}
 }
+
+// Pings far more frequent than the interval must not inflate the result count:
+// uptime % has to reflect time, not how chatty the job is.
+func TestHeartbeatResultsAreTimeProportional(t *testing.T) {
+	m := config.Monitor{
+		ID: "cron", Name: "Cron", Type: "push", Token: "0123456789abcdef",
+		Interval: config.Duration(100 * time.Millisecond), Grace: config.Duration(50 * time.Millisecond),
+		FailThreshold: 1, RecoverThreshold: 1,
+	}
+	h := start(t, filepath.Join(t.TempDir(), "v.db"), m)
+	for range 40 { // ~400ms healthy, pinging every 10ms
+		h.sched.Beat(m.Token, time.Now())
+		time.Sleep(10 * time.Millisecond)
+	}
+	waitFor(t, "down", func() bool { return h.state("cron") == monitor.Down })
+	time.Sleep(250 * time.Millisecond) // ~400ms down in total
+	res, _ := h.st.Results(context.Background(), "cron", time.Now().Add(-time.Hour), 1000)
+	var up, down int
+	for _, r := range res {
+		if r.Status == check.Up {
+			up++
+		} else {
+			down++
+		}
+	}
+	if up > 8 || down < 2 {
+		t.Fatalf("results not time-proportional: %d up, %d down (40 pings sent)", up, down)
+	}
+}

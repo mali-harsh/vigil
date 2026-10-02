@@ -119,7 +119,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	} else {
 		go func() { srvErr <- srv.ListenAndServe() }()
 	}
-	log.Info("vigil started", "version", version, "listen", cfg.Server.Listen, "monitors", len(cfg.Monitors))
+	log.Info("vigil started", "version", version, "listen", srv.Addr, "tls_domains", cfg.Server.TLS.Domains, "monitors", len(cfg.Monitors))
 
 	select {
 	case <-ctx.Done():

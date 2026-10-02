@@ -99,34 +99,65 @@ func (s *Scheduler) probeLoop(ctx context.Context, m config.Monitor, c check.Che
 	}
 }
 
-// watchPush emits UP on every ping and DOWN when no ping arrives within
-// interval+grace, then again every interval while silent.
+// watchPush evaluates a heartbeat on a fixed cadence — one result per
+// interval in every state — so result counts stay proportional to time and
+// uptime % is honest (pings may arrive far more often than outages are
+// sampled). State changes are still immediate: a missed deadline emits DOWN
+// at once, and the first ping after silence emits UP at once.
 func (s *Scheduler) watchPush(ctx context.Context, m config.Monitor, pings <-chan time.Time) {
-	deadline := m.Interval.D() + m.Grace.D()
-	timer := time.NewTimer(deadline)
-	defer timer.Stop()
-	last := time.Time{}
+	interval, deadline := m.Interval.D(), m.Interval.D()+m.Grace.D()
+	started := time.Now()
+	var last time.Time // last ping; zero = none yet
+	healthy := false   // what we last reported
+
+	tick := time.NewTimer(interval)
+	miss := time.NewTimer(deadline)
+	defer tick.Stop()
+	defer miss.Stop()
+	reset := func(t *time.Timer, d time.Duration) {
+		if !t.Stop() {
+			select {
+			case <-t.C:
+			default:
+			}
+		}
+		t.Reset(d)
+	}
+	report := func(at time.Time, up bool) {
+		healthy = up
+		r := check.Result{MonitorID: m.ID, At: at.UTC(), Status: check.Up, Message: "heartbeat received"}
+		if !up {
+			r.Status, r.Message = check.Down, "no heartbeat since start"
+			if !last.IsZero() {
+				r.Message = "no heartbeat for " + at.Sub(last).Round(time.Second).String()
+			}
+		}
+		s.emit(ctx, r)
+		reset(tick, interval)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case at := <-pings:
 			last = at
-			s.emit(ctx, check.Result{MonitorID: m.ID, At: at.UTC(), Status: check.Up, Message: "heartbeat received"})
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
+			reset(miss, deadline)
+			if !healthy {
+				report(at, true) // recovery (or first ping) is news right away
 			}
-			timer.Reset(deadline)
-		case now := <-timer.C:
-			msg := "no heartbeat since start"
-			if !last.IsZero() {
-				msg = "no heartbeat for " + now.Sub(last).Round(time.Second).String()
+		case now := <-miss.C:
+			if healthy || last.IsZero() {
+				report(now, false)
 			}
-			s.emit(ctx, check.Result{MonitorID: m.ID, At: now.UTC(), Status: check.Down, Message: msg})
-			timer.Reset(m.Interval.D())
+		case now := <-tick.C:
+			switch {
+			case !last.IsZero() && now.Sub(last) <= deadline:
+				report(now, true)
+			case !last.IsZero() || now.Sub(started) > deadline:
+				report(now, false)
+			default:
+				reset(tick, interval) // no ping yet, still within the first deadline
+			}
 		}
 	}
 }
