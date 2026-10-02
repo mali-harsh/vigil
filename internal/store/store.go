@@ -107,6 +107,21 @@ var migrations = []string{ // SQLite
 	`ALTER TABLE results ADD COLUMN location TEXT NOT NULL DEFAULT 'local';
 	ALTER TABLE results ADD COLUMN eff TEXT NOT NULL DEFAULT '';
 	UPDATE results SET eff = status;`,
+
+	// 4: acknowledgement + escalation progress, actor on updates, subscribers
+	`ALTER TABLE incidents ADD COLUMN acked_at INTEGER;
+	ALTER TABLE incidents ADD COLUMN acked_by TEXT NOT NULL DEFAULT '';
+	ALTER TABLE incidents ADD COLUMN esc_step INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE incident_updates ADD COLUMN actor TEXT NOT NULL DEFAULT '';
+	CREATE TABLE subscribers (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		kind         TEXT NOT NULL,
+		address      TEXT NOT NULL,
+		token        TEXT NOT NULL UNIQUE,
+		created_at   INTEGER NOT NULL,
+		confirmed_at INTEGER,
+		UNIQUE (kind, address)
+	);`,
 }
 
 // Open opens (creating if needed) the SQLite database at path.
@@ -338,6 +353,7 @@ type Update struct {
 	At      time.Time `json:"at"`
 	Status  string    `json:"status"`
 	Message string    `json:"message"`
+	Actor   string    `json:"actor,omitempty"` // who posted it ("vigil" for automatic updates)
 }
 
 type Incident struct {
@@ -351,6 +367,9 @@ type Incident struct {
 	ResolvedAt     *time.Time `json:"resolved_at,omitempty"`
 	Cause          string     `json:"cause,omitempty"` // internal: raw probe error
 	LastNotifiedAt time.Time  `json:"-"`
+	AckedAt        *time.Time `json:"acked_at,omitempty"`
+	AckedBy        string     `json:"acked_by,omitempty"`
+	EscStep        int        `json:"escalation_step"`
 	Updates        []Update   `json:"updates,omitempty"`
 }
 
@@ -362,6 +381,7 @@ type NewIncident struct {
 	At         time.Time
 	Cause      string
 	Message    string // first public update
+	Actor      string // who declared it ("vigil" for automatic incidents)
 }
 
 // OpenIncident creates an incident with its first update. For monitor
@@ -388,8 +408,11 @@ func (s *Store) OpenIncident(ctx context.Context, n NewIncident) (int64, error) 
 		VALUES(?,?,?,?,?,?,?,?) RETURNING id`), n.MonitorID, ms(n.At), n.Cause, ms(n.At), n.Title, Investigating, n.Impact, strings.Join(n.Components, ",")).Scan(&id); err != nil {
 		return 0, err
 	}
-	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO incident_updates(incident_id, at, status, message) VALUES(?,?,?,?)`),
-		id, ms(n.At), Investigating, n.Message); err != nil {
+	if n.Actor == "" {
+		n.Actor = "vigil"
+	}
+	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO incident_updates(incident_id, at, status, message, actor) VALUES(?,?,?,?,?)`),
+		id, ms(n.At), Investigating, n.Message, n.Actor); err != nil {
 		return 0, err
 	}
 	return id, tx.Commit()
@@ -397,7 +420,7 @@ func (s *Store) OpenIncident(ctx context.Context, n NewIncident) (int64, error) 
 
 // AddUpdate posts a public update; status "resolved" closes the incident.
 // title (optional) renames it.
-func (s *Store) AddUpdate(ctx context.Context, incID int64, at time.Time, status, message, title string) error {
+func (s *Store) AddUpdate(ctx context.Context, incID int64, at time.Time, status, message, title, actor string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -413,8 +436,8 @@ func (s *Store) AddUpdate(ctx context.Context, incID int64, at time.Time, status
 	if resolved.Valid {
 		return ErrResolved
 	}
-	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO incident_updates(incident_id, at, status, message) VALUES(?,?,?,?)`),
-		incID, ms(at), status, message); err != nil {
+	if _, err := tx.ExecContext(ctx, s.q(`INSERT INTO incident_updates(incident_id, at, status, message, actor) VALUES(?,?,?,?,?)`),
+		incID, ms(at), status, message, actor); err != nil {
 		return err
 	}
 	q, args := `UPDATE incidents SET status=?`, []any{status}
@@ -442,7 +465,7 @@ func (s *Store) ResolveIncident(ctx context.Context, monitorID string, at time.T
 	if err != nil || inc == nil {
 		return nil, err
 	}
-	if err := s.AddUpdate(ctx, inc.ID, at, Resolved, message, ""); err != nil {
+	if err := s.AddUpdate(ctx, inc.ID, at, Resolved, message, "", "vigil"); err != nil {
 		return nil, err
 	}
 	inc.ResolvedAt, inc.Status = &at, Resolved
@@ -492,14 +515,14 @@ func (s *Store) IncidentsSince(ctx context.Context, t time.Time) ([]Incident, er
 
 func (s *Store) loadUpdates(ctx context.Context, incs []Incident) error {
 	for i := range incs {
-		rows, err := s.db.QueryContext(ctx, s.q(`SELECT id, at, status, message FROM incident_updates WHERE incident_id=? ORDER BY at DESC, id DESC`), incs[i].ID)
+		rows, err := s.db.QueryContext(ctx, s.q(`SELECT id, at, status, message, actor FROM incident_updates WHERE incident_id=? ORDER BY at DESC, id DESC`), incs[i].ID)
 		if err != nil {
 			return err
 		}
 		for rows.Next() {
 			var u Update
 			var at int64
-			if err := rows.Scan(&u.ID, &at, &u.Status, &u.Message); err != nil {
+			if err := rows.Scan(&u.ID, &at, &u.Status, &u.Message, &u.Actor); err != nil {
 				rows.Close()
 				return err
 			}
@@ -515,7 +538,7 @@ func (s *Store) loadUpdates(ctx context.Context, incs []Incident) error {
 }
 
 func (s *Store) incidents(ctx context.Context, where string, args ...any) ([]Incident, error) {
-	rows, err := s.db.QueryContext(ctx, s.q(`SELECT id, monitor_id, started_at, resolved_at, cause, last_notified_at, title, status, impact, components
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT id, monitor_id, started_at, resolved_at, cause, last_notified_at, title, status, impact, components, acked_at, acked_by, esc_step
 		FROM incidents `+where), args...)
 	if err != nil {
 		return nil, err
@@ -525,15 +548,19 @@ func (s *Store) incidents(ctx context.Context, where string, args ...any) ([]Inc
 	for rows.Next() {
 		var i Incident
 		var started, notified int64
-		var resolved sql.NullInt64
+		var resolved, acked sql.NullInt64
 		var comps string
-		if err := rows.Scan(&i.ID, &i.MonitorID, &started, &resolved, &i.Cause, &notified, &i.Title, &i.Status, &i.Impact, &comps); err != nil {
+		if err := rows.Scan(&i.ID, &i.MonitorID, &started, &resolved, &i.Cause, &notified, &i.Title, &i.Status, &i.Impact, &comps, &acked, &i.AckedBy, &i.EscStep); err != nil {
 			return nil, err
 		}
 		i.StartedAt, i.LastNotifiedAt = fromMS(started), fromMS(notified)
 		if resolved.Valid {
 			t := fromMS(resolved.Int64)
 			i.ResolvedAt = &t
+		}
+		if acked.Valid {
+			t := fromMS(acked.Int64)
+			i.AckedAt = &t
 		}
 		i.Components = []string{}
 		if comps != "" {

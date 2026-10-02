@@ -28,6 +28,7 @@ type Switch struct {
 	node    string
 	version string
 	leader  LeaderResolver
+	auth    *Authn
 
 	mu       sync.Mutex
 	target   string
@@ -35,8 +36,8 @@ type Switch struct {
 	resolved time.Time
 }
 
-func NewSwitch(node, version string, leader LeaderResolver) *Switch {
-	return &Switch{node: node, version: version, leader: leader}
+func NewSwitch(node, version string, leader LeaderResolver, auth *Authn) *Switch {
+	return &Switch{node: node, version: version, leader: leader, auth: auth}
 }
 
 // Set installs the active handler (nil = standby).
@@ -83,6 +84,9 @@ func (s *Switch) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Header.Set(proxiedHeader, s.node)
+	if s.auth != nil {
+		s.auth.SignForward(r) // the leader sees the proxy's IP, not the SSO proxy's: vouch for the identity
+	}
 	p.ServeHTTP(w, r)
 }
 

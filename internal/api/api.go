@@ -9,10 +9,6 @@ package api
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -27,6 +23,7 @@ import (
 	"github.com/mali-harsh/vigil/internal/metrics"
 	"github.com/mali-harsh/vigil/internal/statuspage"
 	"github.com/mali-harsh/vigil/internal/store"
+	"github.com/mali-harsh/vigil/internal/subscribers"
 )
 
 type Beater interface {
@@ -34,21 +31,29 @@ type Beater interface {
 }
 
 type Server struct {
-	Cfg     *config.Config
-	Engine  *engine.Engine
-	Store   *store.Store
-	Beater  Beater
-	Results chan<- check.Result // agent results enter the engine here
-	Metrics *metrics.Registry
-	Version string
-	Node    string // this server's ID (HA)
-	Log     *slog.Logger
+	Cfg       *config.Config
+	Engine    *engine.Engine
+	Store     *store.Store
+	Beater    Beater
+	Results   chan<- check.Result    // agent results enter the engine here
+	Notifiers Notifiers              // test notifications (optional)
+	Publisher *subscribers.Publisher // status-page subscribers (optional)
+	Metrics   *metrics.Registry
+	Version   string
+	Node      string // this server's ID (HA)
+	Log       *slog.Logger
 
 	page *statuspage.Builder
+	auth *Authn
+
+	subPerIP, subGlobal *limiter // sign-up abuse limits
 }
 
 func (s *Server) Handler() http.Handler {
 	s.page = &statuspage.Builder{Cfg: s.Cfg, Engine: s.Engine, Store: s.Store}
+	s.auth = NewAuthn(s.Cfg)
+	s.subPerIP = newLimiter(5, time.Hour)
+	s.subGlobal = newLimiter(300, time.Hour) // caps confirmation mail even from many IPs
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /{$}", s.statusPage)
@@ -58,14 +63,26 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /readyz", s.healthz) // the active node is ready when healthy
 	mux.HandleFunc("/push/{token}", s.push)  // GET/POST/HEAD: whatever the cron job can do
 
-	mux.Handle("GET /metrics", s.read(s.metricsHandler))
-	mux.Handle("GET /api/v1/agents", s.read(s.agents))
-	mux.Handle("GET /api/v1/monitors", s.read(s.monitors))
-	mux.Handle("GET /api/v1/monitors/{id}/results", s.read(s.results))
-	mux.Handle("GET /api/v1/incidents", s.read(s.incidents))
-	mux.Handle("GET /api/v1/incidents/{id}", s.read(s.incident))
-	mux.Handle("POST /api/v1/incidents", s.admin(s.createIncident))
-	mux.Handle("POST /api/v1/incidents/{id}/updates", s.admin(s.addUpdate))
+	mux.Handle("GET /metrics", s.need("read", s.metricsHandler))
+	mux.Handle("GET /api/v1/agents", s.need("read", s.agents))
+	mux.Handle("GET /api/v1/monitors", s.need("read", s.monitors))
+	mux.Handle("GET /api/v1/monitors/{id}/results", s.need("read", s.results))
+	mux.Handle("GET /api/v1/incidents", s.need("read", s.incidents))
+	mux.Handle("GET /api/v1/incidents/{id}", s.need("read", s.incident))
+	mux.Handle("POST /api/v1/incidents", s.need("incidents:write", s.createIncident))
+	mux.Handle("POST /api/v1/incidents/{id}/updates", s.need("incidents:write", s.addUpdate))
+	mux.Handle("POST /api/v1/incidents/{id}/ack", s.need("incidents:write", s.ackAPI))
+	mux.Handle("POST /api/v1/notifiers/{name}/test", s.need("admin", s.testNotifier))
+	mux.HandleFunc("GET /ack/{token}", s.ackPage)
+	mux.HandleFunc("POST /subscribe", s.subscribe)
+	mux.HandleFunc("GET /subscribe/confirm/{token}", s.confirmPage)
+	mux.HandleFunc("POST /subscribe/confirm/{token}", s.confirm)
+	mux.HandleFunc("GET /unsubscribe/{token}", s.unsubscribePage)
+	mux.HandleFunc("POST /unsubscribe/{token}", s.unsubscribe)
+	mux.Handle("GET /api/v1/subscribers", s.need("subscribers:write", s.listSubscribers))
+	mux.Handle("POST /api/v1/subscribers", s.need("subscribers:write", s.addSubscriber))
+	mux.Handle("DELETE /api/v1/subscribers/{id}", s.need("subscribers:write", s.deleteSubscriber))
+	mux.HandleFunc("POST /ack/{token}", s.ackLink)
 
 	s.agentRoutes(mux)
 	s.adminRoutes(mux)
@@ -81,72 +98,6 @@ func securityHeaders(h http.Handler) http.Handler {
 			w.Header().Set("Cache-Control", "no-store")
 		}
 		h.ServeHTTP(w, r)
-	})
-}
-
-// ---- auth ----
-
-func bearer(r *http.Request) string {
-	h := r.Header.Get("Authorization")
-	if t, ok := strings.CutPrefix(h, "Bearer "); ok {
-		return t
-	}
-	return ""
-}
-
-func anyMatch(got string, tokens []string) bool {
-	ok := false
-	for _, t := range tokens {
-		// evaluate every token: timing doesn't reveal which (or whether one) matched
-		ok = subtle.ConstantTimeCompare([]byte(got), []byte(t)) == 1 || ok
-	}
-	return ok && got != ""
-}
-
-// sessionValue derives the admin cookie from a token, so the cookie never
-// contains the token itself and rotating the token logs everyone out.
-func sessionValue(token string) string {
-	m := hmac.New(sha256.New, []byte(token))
-	m.Write([]byte("vigil-admin-session-v1"))
-	return hex.EncodeToString(m.Sum(nil))
-}
-
-func (s *Server) isAdmin(r *http.Request) bool {
-	tokens := s.Cfg.Server.AdminTokens
-	if len(tokens) == 0 {
-		return false
-	}
-	if anyMatch(bearer(r), tokens) {
-		return true
-	}
-	c, err := r.Cookie(sessionCookie)
-	if err != nil {
-		return false
-	}
-	sessions := make([]string, len(tokens))
-	for i, t := range tokens {
-		sessions[i] = sessionValue(t)
-	}
-	return anyMatch(c.Value, sessions)
-}
-
-func (s *Server) read(h http.HandlerFunc) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(s.Cfg.Server.APITokens) > 0 && !anyMatch(bearer(r), s.Cfg.Server.APITokens) && !s.isAdmin(r) {
-			writeJSON(w, http.StatusUnauthorized, errBody("unauthorized"))
-			return
-		}
-		h(w, r)
-	})
-}
-
-func (s *Server) admin(h http.HandlerFunc) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.isAdmin(r) {
-			writeJSON(w, http.StatusUnauthorized, errBody("admin token required"))
-			return
-		}
-		h(w, r)
 	})
 }
 
@@ -180,7 +131,7 @@ func (s *Server) statusPage(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	html, err := statuspage.Render(p, true)
+	html, err := statuspage.Render(p, true, statuspage.RenderOptions{Subscribe: s.subscribeEnabled()})
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -419,7 +370,7 @@ func (s *Server) validateCreate(req createReq) error {
 	return nil
 }
 
-func (s *Server) doCreate(ctx context.Context, req createReq) (int64, error) {
+func (s *Server) doCreate(ctx context.Context, req createReq, who string) (int64, error) {
 	if req.Impact == "" {
 		req.Impact = "down"
 	}
@@ -428,15 +379,16 @@ func (s *Server) doCreate(ctx context.Context, req createReq) (int64, error) {
 	}
 	id, err := s.Store.OpenIncident(ctx, store.NewIncident{
 		Title: strings.TrimSpace(req.Title), Impact: req.Impact, Components: req.Components,
-		At: time.Now().UTC(), Message: strings.TrimSpace(req.Message),
+		At: time.Now().UTC(), Message: strings.TrimSpace(req.Message), Actor: who,
 	})
 	if err == nil {
-		s.Log.Info("incident declared", "incident", id, "title", req.Title)
+		s.Log.Info("incident declared", "incident", id, "title", req.Title, "by", who)
+		s.Publisher.Publish(id)
 	}
 	return id, err
 }
 
-func (s *Server) doUpdate(ctx context.Context, id int64, req updateReq) error {
+func (s *Server) doUpdate(ctx context.Context, id int64, req updateReq, who string) error {
 	if !store.ValidStatus(req.Status) {
 		return errors.New("status must be investigating, identified, monitoring or resolved")
 	}
@@ -446,9 +398,10 @@ func (s *Server) doUpdate(ctx context.Context, id int64, req updateReq) error {
 	if len(req.Title) > 200 {
 		return errors.New("title too long")
 	}
-	err := s.Store.AddUpdate(ctx, id, time.Now().UTC(), req.Status, strings.TrimSpace(req.Message), strings.TrimSpace(req.Title))
+	err := s.Store.AddUpdate(ctx, id, time.Now().UTC(), req.Status, strings.TrimSpace(req.Message), strings.TrimSpace(req.Title), who)
 	if err == nil {
-		s.Log.Info("incident updated", "incident", id, "status", req.Status)
+		s.Log.Info("incident updated", "incident", id, "status", req.Status, "by", who)
+		s.Publisher.Publish(id)
 	}
 	return err
 }
@@ -458,7 +411,7 @@ func (s *Server) createIncident(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	id, err := s.doCreate(r.Context(), req)
+	id, err := s.doCreate(r.Context(), req, actor(r))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errBody(err.Error()))
 		return
@@ -481,7 +434,7 @@ func (s *Server) addUpdate(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	switch err := s.doUpdate(r.Context(), id, req); {
+	switch err := s.doUpdate(r.Context(), id, req, actor(r)); {
 	case errors.Is(err, store.ErrNotFound):
 		writeJSON(w, http.StatusNotFound, errBody("not found"))
 	case errors.Is(err, store.ErrResolved):

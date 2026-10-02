@@ -32,6 +32,7 @@ import (
 	"github.com/mali-harsh/vigil/internal/scheduler"
 	"github.com/mali-harsh/vigil/internal/statuspage"
 	"github.com/mali-harsh/vigil/internal/store"
+	"github.com/mali-harsh/vigil/internal/subscribers"
 	"golang.org/x/crypto/acme/autocert"
 )
 
@@ -108,7 +109,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	hc := &http.Client{Timeout: 15 * time.Second}
 	senders := map[string]notify.Sender{}
 	for _, n := range cfg.Notifiers {
-		senders[n.Name] = notify.NewSender(n, hc)
+		senders[n.Name] = notify.NewSender(n, cfg.Server.SMTP, hc)
 	}
 	disp := notify.NewDispatcher(senders, log)
 	disp.Metrics = reg
@@ -116,6 +117,9 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	defer stopDisp()
 	dispDone := make(chan struct{})
 	go func() { disp.Run(dispCtx, 4); close(dispDone) }()
+
+	pub := subscribers.New(cfg, st, log)
+	go pub.Run(ctx)
 
 	node := ha.NodeID()
 	advertise := advertiseURL(cfg)
@@ -128,7 +132,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 			return "", err
 		}
 		return li.Address, nil
-	})
+	}, api.NewAuthn(cfg))
 	srv := &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           sw,
@@ -158,7 +162,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 
 	var termErr error
 	lead := func(lctx context.Context) {
-		if termErr = term(lctx, cfg, st, disp, reg, sw, node, log); termErr != nil {
+		if termErr = term(lctx, cfg, st, disp, pub, reg, sw, node, log); termErr != nil {
 			log.Error("leader term failed", "err", termErr)
 		}
 	}
@@ -207,7 +211,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 // term runs everything only the leader does — probes, engine, discovery,
 // dead-man heartbeat, static export — and serves the full app until lctx ends.
 // A new term rebuilds state from the database, exactly like a restart.
-func term(lctx context.Context, cfg *config.Config, st *store.Store, disp *notify.Dispatcher, reg *metrics.Registry, sw *api.Switch, node string, log *slog.Logger) error {
+func term(lctx context.Context, cfg *config.Config, st *store.Store, disp *notify.Dispatcher, pub *subscribers.Publisher, reg *metrics.Registry, sw *api.Switch, node string, log *slog.Logger) error {
 	results := make(chan check.Result, 1024)
 	sched := scheduler.New(results)
 	defer sched.Wait()
@@ -215,6 +219,7 @@ func term(lctx context.Context, cfg *config.Config, st *store.Store, disp *notif
 	if err != nil {
 		return err
 	}
+	eng.SetPublisher(pub)
 	engDone := make(chan struct{})
 	go func() { eng.Run(lctx, results); close(engDone) }()
 	defer func() { <-engDone }()
@@ -236,7 +241,7 @@ func term(lctx context.Context, cfg *config.Config, st *store.Store, disp *notif
 		go statuspage.Export(lctx, &statuspage.Builder{Cfg: cfg, Engine: eng, Store: st}, dir, time.Minute, log)
 	}
 
-	sw.Set((&api.Server{Cfg: cfg, Engine: eng, Store: st, Beater: sched, Results: results, Metrics: reg, Version: version, Node: node, Log: log}).Handler())
+	sw.Set((&api.Server{Cfg: cfg, Engine: eng, Store: st, Beater: sched, Results: results, Notifiers: disp, Publisher: pub, Metrics: reg, Version: version, Node: node, Log: log}).Handler())
 	log.Info("serving as active node", "node", node)
 	<-lctx.Done()
 	sw.Set(nil) // back to standby before anything else stops

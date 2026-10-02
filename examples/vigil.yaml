@@ -2,6 +2,11 @@
 server:
   listen: ":8080"
   data_dir: "./data"
+  # public_url: https://status.example.com
+  # ack_secret: "${VIGIL_ACK_SECRET}"        # one-click acknowledge links in alerts
+  # api_keys:                                # scoped: read | incidents:write | subscribers:write | admin
+  #   - {name: grafana, token: "${GRAFANA_TOKEN}", scopes: [read]}
+  # smtp: {host: smtp.example.com, port: 587, username: "${SMTP_USER}", password: "${SMTP_PASS}", from: "Status <status@example.com>"}
   # api_tokens: ["${VIGIL_API_TOKEN}"]       # protect /api/v1 reads
   # admin_tokens: ["${VIGIL_ADMIN_TOKEN}"]   # enables /admin UI + write API
   # database:                                # HA: run 2+ servers on one Postgres
@@ -54,8 +59,14 @@ notifiers:
     type: slack           # Slack incoming webhook OR Workflow webhook (variable "text")
     url: "${SLACK_WEBHOOK}"
   # - name: oncall
-  #   type: webhook        # POSTs the event as JSON
-  #   url: "https://example.com/hook"
+  #   type: pagerduty      # also: opsgenie, email, discord, teams, telegram, webhook
+  #   routing_key: "${PD_ROUTING_KEY}"
+
+# escalations:
+#   - name: prod
+#     steps:
+#       - notify: [slack]
+#       - {after: 10m, notify: [oncall]}
 
 monitors:
   - name: Website
@@ -68,8 +79,8 @@ monitors:
       cert_min_days: 14    # cert expiring sooner = DOWN
 
   - name: Postgres
-    type: tcp
-    host: db.internal:5432
+    type: postgres          # connects and runs SELECT 1
+    url: "${DATABASE_CHECK_URL}"
     # locations: [gcp-vpc]    # run from an agent instead of the server
 
   - name: API certificate

@@ -48,6 +48,18 @@ func New(m config.Monitor) (Checker, error) {
 		return &tlsCheck{m: m}, nil
 	case "dns":
 		return &dnsCheck{m: m}, nil
+	case "postgres":
+		return &postgresCheck{m: m}, nil
+	case "redis":
+		return &redisCheck{m: m}, nil
+	case "kafka":
+		return &kafkaCheck{m: m}, nil
+	case "smtp":
+		return &smtpCheck{m: m}, nil
+	case "grpc":
+		return newGRPC(m), nil
+	case "icmp":
+		return &icmpCheck{m: m}, nil
 	}
 	return nil, fmt.Errorf("no active checker for type %q", m.Type)
 }
@@ -137,6 +149,11 @@ func (c *httpCheck) Check(ctx context.Context) Result {
 	}
 	if m.Expect.BodyContains != "" && !strings.Contains(string(b), m.Expect.BodyContains) {
 		return down(m, lat, "body does not contain %q", m.Expect.BodyContains)
+	}
+	if len(m.Expect.JSON) > 0 {
+		if err := jsonAssert(b, m.Expect.JSON); err != nil {
+			return down(m, lat, "%v", err)
+		}
 	}
 	if msg, ok := certCheck(m, resp.TLS); !ok {
 		return down(m, lat, "%s", msg)

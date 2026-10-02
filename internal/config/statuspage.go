@@ -15,6 +15,7 @@ type StatusPage struct {
 	LogoURL     string      `yaml:"logo_url"`
 	Timezone    string      `yaml:"timezone"` // day boundaries for the 90-day bars; default UTC
 	ExportDir   string      `yaml:"export_dir"`
+	Subscribe   bool        `yaml:"subscribe"` // email sign-up form (needs server.smtp + server.public_url)
 	Components  []Component `yaml:"components"`
 
 	Location *time.Location `yaml:"-"`
@@ -172,6 +173,9 @@ func (c *Config) validateStatusPage() error {
 				errs = append(errs, fmt.Errorf("%s: unknown component %q", p, cid))
 			}
 		}
+	}
+	if sp.Subscribe && (c.Server.SMTP.Host == "" || c.Server.PublicURL == "") {
+		errs = append(errs, errors.New("status_page.subscribe needs server.smtp and server.public_url (confirmation links point there)"))
 	}
 	if (len(c.Server.TLS.Domains) > 0) != (c.Server.TLS.Email != "") {
 		errs = append(errs, errors.New("server.tls: domains and email go together"))

@@ -4,7 +4,7 @@ Self-hosted uptime monitoring and status page. One binary, one config file, aler
 
 > Uptime Kuma's simplicity + Gatus's config-as-code + Instatus's status page + agents for private infrastructure.
 
-**Status:** Phases 0–2b done (core engine · status page, incidents, maintenance, admin UI · agents, multi-location quorum, discovery, self-monitoring, metrics, Helm · Postgres + HA failover). Not production-ready yet.
+**Status:** Phases 0–3 done (core engine · status page, incidents, maintenance, admin UI · agents, quorum, discovery, self-monitoring, metrics, Helm · Postgres HA · protocol checks, on-call channels, escalation + ack, scoped keys + SSO, subscribers). Not production-ready yet.
 
 ## Quick start
 
@@ -21,15 +21,23 @@ docker run -d -p 8080:8080 \
 
 Validate config without starting: `vigil -config vigil.yaml -check` (all errors reported at once, unknown keys rejected).
 
-## What it monitors (Phase 0)
+## What it monitors
 
-| Type   | Checks |
-|--------|--------|
-| `http` | status codes, body contains, latency (→ degraded), TLS cert expiry, custom method/headers/body |
-| `tcp`  | port accepts connections |
-| `tls`  | handshake + certificate expiry |
-| `dns`  | resolves, optionally to expected IPs |
-| `push` | heartbeat: anything that can `curl` pings `/push/<token>`; silent past `interval + grace` = DOWN |
+| Type | Proves | Config |
+|---|---|---|
+| `http` | status, body text, **JSON assertions**, latency (→ degraded), cert expiry | `url`, `expect: {status, body_contains, json: [{path: data.ok, equals: "true"}], max_latency, cert_min_days}` |
+| `tcp` | port accepts connections | `host: db:5432` |
+| `tls` | handshake + certificate expiry | `host: api:443`, `expect.cert_min_days` |
+| `dns` | resolves (optionally to given IPs) | `host`, `expect.resolves_to` |
+| `icmp` | ping reply (unprivileged ICMP; else needs `CAP_NET_RAW`) | `host: 10.0.0.1` |
+| `postgres` | connects **and** runs `SELECT 1` (password never shown) | `url: postgres://user:pass@db:5432/app` |
+| `redis` | `AUTH` + `PING` → `PONG` (catches "LOADING", wrong password) | `host`, `password`, `username`, `tls` |
+| `kafka` | broker answers an ApiVersions request (not just an open port) | `host: broker:9092`, `tls` |
+| `grpc` | `grpc.health.v1` → `SERVING` (h2c or TLS) | `host: svc:50051`, `service`, `tls` |
+| `smtp` | `220` banner + `EHLO` | `host: mail:25`, `tls` (implicit, :465) |
+| `push` | heartbeat: anything that can `curl` pings `/push/<token>` | `token`, `interval`, `grace` |
+
+Protocol checks speak just enough of each protocol to prove the service is *answering* — tested against real Postgres 17, Redis 7 and Kafka 3.9.
 
 ## Why the alerts are trustworthy
 
@@ -45,6 +53,63 @@ probe result ──► state machine ──► incident ──► notification
 - **Survives restarts.** State and open incidents are persisted; a restart mid-outage closes the *same* incident and sends one recovery.
 - **No silent startup noise.** First sighting of a healthy target is silent; removed/paused monitors' incidents are closed.
 - **Slow channels can't stall monitoring.** Notifications are queued, retried with backoff (0s/2s/10s/30s), and drained on shutdown.
+
+## Alert channels
+
+| `type` | Notes |
+|---|---|
+| `slack` | incoming webhook or Workflow-Builder webhook (variable `text`) |
+| `discord`, `teams` | channel webhook / Teams *Workflows* webhook (adaptive card) |
+| `telegram` | `bot_token`, `chat_id` |
+| `email` | `to: [...]`, via `server.smtp` (STARTTLS / TLS, header-injection safe) |
+| `pagerduty` | Events API v2 `routing_key` — **trigger → acknowledge → resolve** on one dedup key |
+| `opsgenie` | `api_key`, `region` — create → acknowledge → close by alias |
+| `webhook` | the event as JSON |
+
+`POST /api/v1/notifiers/<name>/test` (or **Send test** in the admin UI) sends a real message and reports the channel's actual answer.
+
+## Escalation & acknowledgement
+
+```yaml
+server:
+  public_url: https://status.example.com
+  ack_secret: "${VIGIL_ACK_SECRET}"     # signs one-click ack links in alerts
+escalations:
+  - name: prod
+    steps:
+      - notify: [slack]                 # immediately
+      - {after: 10m, notify: [pagerduty]}
+      - {after: 30m, notify: [cto-email]}
+monitors:
+  - {name: API, type: http, url: https://api.example.com/health, escalation: prod}
+```
+
+- Every alert carries an **Acknowledge** link. Opening it shows a confirm button — it never acks on GET, because Slack unfurlers and mail scanners open links.
+- Acking (link, admin UI, or `POST /api/v1/incidents/{id}/ack`) stops further steps and reminders; everyone already paged is told who took it; PagerDuty/Opsgenie are acknowledged.
+- Recovery is sent to **every** channel the outage reached. Steps fire within 5 s of becoming due.
+
+## Access control
+
+```yaml
+server:
+  api_keys:
+    - {name: grafana,    token: "${GRAFANA_TOKEN}", scopes: [read]}
+    - {name: deploy-bot, token: "${BOT_TOKEN}",     scopes: [incidents:write]}
+  auth:                                   # SSO via oauth2-proxy / Cloudflare Access / Google IAP
+    header: X-Forwarded-Email
+    trusted_proxies: [10.0.0.0/8]         # the header is ignored from anywhere else
+    users:
+      - {email: "*@example.com", role: responder}
+      - {email: lead@example.com, role: admin}
+```
+
+Scopes: `read`, `incidents:write`, `subscribers:write`, `admin`. Roles: **viewer** (read), **responder** (+ ack, declare/update incidents), **admin** (everything). The admin UI hides what a role can't do; incident updates and acks record **who** did them. Legacy `api_tokens` / `admin_tokens` keep working. In HA, a standby vouches for SSO identities with a signature bound to the request, so forged or replayed headers are rejected.
+
+## Status-page subscribers
+
+`status_page.subscribe: true` (needs `server.smtp` + `public_url`) adds an email sign-up form: double opt-in (confirm on POST, not GET), one-click unsubscribe (incl. RFC 8058 `List-Unsubscribe-Post` for Gmail/Yahoo), honeypot + per-IP and global rate limits, and the same response whether or not an address is already subscribed. Subscribers get every public incident update.
+
+Webhook subscribers are added by operators: `POST /api/v1/subscribers {"kind":"webhook","address":"https://..."}` returns a secret; deliveries carry `X-Vigil-Signature: sha256=<HMAC of body>`.
 
 ## Agents: private networks & multiple regions
 
@@ -196,7 +261,8 @@ Read endpoints need `Authorization: Bearer <api or admin token>` when `server.ap
 - **Phase 1 — status page** ✅ components & groups, 90-day bars, incident updates, maintenance windows, auto-HTTPS, static export, badges, admin UI
 - **Phase 2 — everywhere** ✅ agents (private + multi-region quorum), Docker & Kubernetes discovery, dead-man's heartbeat + engine liveness, Prometheus `/metrics`, Helm chart, compose, systemd, CI/release
 - **Phase 2b — HA** ✅ Postgres backend (whole test suite runs on both), lease-based leader election with fencing, proxying standbys, Helm HA mode (PDB, anti-affinity)
-- **Phase 3 — teams** subscribers, escalation/on-call, RBAC & scoped keys, more checks (Postgres/Redis/Kafka/gRPC/ICMP), Terraform provider
+- **Phase 3 — teams** ✅ protocol checks (Postgres/Redis/Kafka/gRPC/ICMP/SMTP, JSON assertions), PagerDuty/Opsgenie/email/Discord/Teams/Telegram, escalation + signed ack links, scoped API keys + SSO roles + audit actor, status-page subscribers
+- **Next** Terraform provider (needs a monitor-write API), config hot-reload, maintenance announcements to subscribers, design pass
 
 ## Layout
 
@@ -216,6 +282,8 @@ internal/api       public + read/write API, agent API, metrics, push endpoint, a
 internal/agent     agent client: poll assignments, run probes, batch + retry results
 internal/discovery Docker labels / Kubernetes annotations → monitors
 internal/metrics   dependency-free Prometheus text exposition
+internal/acklink   signed one-click acknowledge links
+internal/subscribers  status-page subscriber delivery (email, signed webhooks)
 ```
 
 ## Development

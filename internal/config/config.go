@@ -9,9 +9,11 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,6 +40,7 @@ type Config struct {
 	Monitors    []Monitor     `yaml:"monitors"`
 	StatusPage  StatusPage    `yaml:"status_page"`
 	Agents      []Agent       `yaml:"agents"`
+	Escalations []Escalation  `yaml:"escalations"`
 	Discovery   Discovery     `yaml:"discovery"`
 	Maintenance []Maintenance `yaml:"maintenance"`
 }
@@ -46,10 +49,14 @@ type Server struct {
 	Listen      string    `yaml:"listen"`
 	DataDir     string    `yaml:"data_dir"`
 	PublicURL   string    `yaml:"public_url"`
+	AckSecret   string    `yaml:"ack_secret"`   // signs one-click acknowledge links in alerts
 	APITokens   []string  `yaml:"api_tokens"`   // read-only bearer tokens; empty = read API open
 	AdminTokens []string  `yaml:"admin_tokens"` // admin UI + write API; empty = admin disabled
-	Retention   Duration  `yaml:"retention"`    // raw check results
-	Heartbeat   Heartbeat `yaml:"heartbeat"`    // dead-man's switch: vigil pings this while healthy
+	SMTP        SMTP      `yaml:"smtp"`
+	APIKeys     []APIKey  `yaml:"api_keys"`
+	Auth        Auth      `yaml:"auth"`
+	Retention   Duration  `yaml:"retention"` // raw check results
+	Heartbeat   Heartbeat `yaml:"heartbeat"` // dead-man's switch: vigil pings this while healthy
 	Database    Database  `yaml:"database"`
 	HA          HA        `yaml:"ha"`
 	TLS         TLS       `yaml:"tls"`
@@ -73,8 +80,73 @@ type Defaults struct {
 
 type Notifier struct {
 	Name string `yaml:"name"`
-	Type string `yaml:"type"` // slack | webhook
-	URL  string `yaml:"url"`
+	Type string `yaml:"type"` // slack | webhook | discord | teams | email | pagerduty | opsgenie | telegram
+	URL  string `yaml:"url"`  // slack, webhook, discord, teams
+
+	To         []string `yaml:"to"`          // email recipients (needs server.smtp)
+	RoutingKey string   `yaml:"routing_key"` // pagerduty Events API v2 integration key
+	APIKey     string   `yaml:"api_key"`     // opsgenie
+	Region     string   `yaml:"region"`      // opsgenie: us (default) | eu
+	BotToken   string   `yaml:"bot_token"`   // telegram
+	ChatID     string   `yaml:"chat_id"`     // telegram
+}
+
+// APIKey is a named bearer token limited to scopes:
+//
+//	read             monitors, results, incidents, agents, metrics
+//	incidents:write  declare / update / acknowledge incidents
+//	subscribers:write manage status-page subscribers
+//	admin            everything (incl. admin UI forms, notifier tests)
+type APIKey struct {
+	Name   string   `yaml:"name"`
+	Token  string   `yaml:"token"`
+	Scopes []string `yaml:"scopes"`
+}
+
+var Scopes = []string{"read", "incidents:write", "subscribers:write", "admin"}
+
+// Roles map people to scopes.
+var Roles = map[string][]string{
+	"viewer":    {"read"},
+	"responder": {"read", "incidents:write"},
+	"admin":     {"admin"},
+}
+
+// Auth enables SSO through an authenticating proxy (oauth2-proxy, Cloudflare
+// Access, Google IAP, ...). The proxy sets an identity header; vigil trusts it
+// only from trusted_proxies and maps the email to a role.
+type Auth struct {
+	Header         string     `yaml:"header"`          // e.g. X-Forwarded-Email, Cf-Access-Authenticated-User-Email
+	TrustedProxies []string   `yaml:"trusted_proxies"` // CIDRs the header is accepted from
+	Users          []AuthUser `yaml:"users"`
+}
+
+type AuthUser struct {
+	Email string `yaml:"email"` // exact, or "*@example.com" for a whole domain
+	Role  string `yaml:"role"`  // viewer | responder | admin
+}
+
+// Keys returns all API keys, including legacy api_tokens (read) and
+// admin_tokens (admin).
+func (s Server) Keys() []APIKey {
+	keys := append([]APIKey(nil), s.APIKeys...)
+	for i, t := range s.APITokens {
+		keys = append(keys, APIKey{Name: fmt.Sprintf("api-token-%d", i+1), Token: t, Scopes: []string{"read"}})
+	}
+	for i, t := range s.AdminTokens {
+		keys = append(keys, APIKey{Name: fmt.Sprintf("admin-token-%d", i+1), Token: t, Scopes: []string{"admin"}})
+	}
+	return keys
+}
+
+// SMTP is the outgoing mail server for email notifiers and subscribers.
+type SMTP struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"` // default 587
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	From     string `yaml:"from"`     // "vigil <status@example.com>"
+	Security string `yaml:"security"` // starttls (default) | tls (implicit, :465) | none
 }
 
 type Monitor struct {
@@ -90,6 +162,12 @@ type Monitor struct {
 	Header map[string]string `yaml:"headers"`
 	Body   string            `yaml:"body"`
 
+	// protocol checks (postgres uses URL; redis/grpc/kafka/smtp use Host)
+	Username string `yaml:"username"` // redis ACL user
+	Password string `yaml:"password"` // redis AUTH
+	Service  string `yaml:"service"`  // grpc health service name ("" = server overall)
+	TLS      bool   `yaml:"tls"`      // redis/grpc/kafka/smtp over TLS (smtp: implicit TLS, e.g. :465)
+
 	Expect Expect `yaml:"expect"`
 
 	// push (heartbeat)
@@ -103,6 +181,9 @@ type Monitor struct {
 	ReminderEvery    Duration `yaml:"reminder_every"`
 	Notify           []string `yaml:"notify"`
 
+	// Escalation names a policy; its first step replaces Notify.
+	Escalation string `yaml:"escalation"`
+
 	// Where the check runs: "local" (this server) and/or agent names.
 	// With several locations the monitor is DOWN only when at least Quorum
 	// of them confirm it (default: majority).
@@ -110,6 +191,37 @@ type Monitor struct {
 	Quorum    int      `yaml:"quorum"`
 
 	Source string `yaml:"-"` // "config", "docker", "kubernetes"
+}
+
+// Escalation pages more people the longer an outage stays unacknowledged.
+//
+//	escalations:
+//	  - name: prod
+//	    steps:
+//	      - notify: [slack]              # at once
+//	      - {after: 10m, notify: [pagerduty]}
+//	      - {after: 30m, notify: [cto-email]}
+//
+// Acknowledging the incident (signed link in the alert, admin UI or API)
+// stops further steps and reminders.
+type Escalation struct {
+	Name  string           `yaml:"name"`
+	Steps []EscalationStep `yaml:"steps"`
+}
+
+type EscalationStep struct {
+	After  Duration `yaml:"after"`
+	Notify []string `yaml:"notify"`
+}
+
+// Policy returns the escalation named n.
+func (c *Config) Policy(n string) (Escalation, bool) {
+	for _, e := range c.Escalations {
+		if e.Name == n {
+			return e, true
+		}
+	}
+	return Escalation{}, false
 }
 
 // LocalLocation is the vigil server itself.
@@ -160,12 +272,20 @@ type KubeDiscovery struct {
 }
 
 type Expect struct {
-	Status        []int    `yaml:"status"`        // http; default 200-399
-	BodyContains  string   `yaml:"body_contains"` // http
-	MaxLatency    Duration `yaml:"max_latency"`   // over this = DEGRADED
-	CertMinDays   int      `yaml:"cert_min_days"` // tls/http(s): under this = DOWN
-	ResolvesTo    []string `yaml:"resolves_to"`   // dns
-	SkipTLSVerify bool     `yaml:"skip_tls_verify"`
+	Status        []int        `yaml:"status"`        // http; default 200-399
+	BodyContains  string       `yaml:"body_contains"` // http
+	MaxLatency    Duration     `yaml:"max_latency"`   // over this = DEGRADED
+	CertMinDays   int          `yaml:"cert_min_days"` // tls/http(s): under this = DOWN
+	ResolvesTo    []string     `yaml:"resolves_to"`   // dns
+	JSON          []JSONExpect `yaml:"json"`          // http: assertions on a JSON body
+	SkipTLSVerify bool         `yaml:"skip_tls_verify"`
+}
+
+// JSONExpect asserts that the value at a dotted path ("data.items.0.status")
+// renders equal to Equals ("ok", "200", "true").
+type JSONExpect struct {
+	Path   string `yaml:"path"`
+	Equals string `yaml:"equals"`
 }
 
 var envRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
@@ -244,6 +364,12 @@ func (c *Config) applyDefaults() {
 		s.Retention = Duration(30 * 24 * time.Hour)
 	}
 	c.applyStatusPageDefaults()
+	if c.Server.SMTP.Port == 0 {
+		c.Server.SMTP.Port = 587
+	}
+	if c.Server.SMTP.Security == "" {
+		c.Server.SMTP.Security = "starttls"
+	}
 	if c.Server.Database.Driver == "" {
 		c.Server.Database.Driver = "sqlite"
 	}
@@ -304,10 +430,10 @@ func (c *Config) validate() error {
 			errs = append(errs, errors.New("notifier: name required"))
 		case notifiers[n.Name]:
 			errs = append(errs, fmt.Errorf("notifier %q: duplicate name", n.Name))
-		case n.Type != "slack" && n.Type != "webhook":
-			errs = append(errs, fmt.Errorf("notifier %q: unknown type %q", n.Name, n.Type))
-		case !isURL(n.URL):
-			errs = append(errs, fmt.Errorf("notifier %q: invalid url", n.Name))
+		default:
+			if err := c.checkNotifier(n); err != nil {
+				errs = append(errs, fmt.Errorf("notifier %q: %w", n.Name, err))
+			}
 		}
 		notifiers[n.Name] = true
 	}
@@ -354,8 +480,88 @@ func (c *Config) validate() error {
 	if ttl := c.Server.HA.LeaseTTL.D(); ttl < 3*time.Second {
 		errs = append(errs, errors.New("server.ha.lease_ttl: must be >= 3s"))
 	}
+	// New api_keys must be strong; legacy api_tokens/admin_tokens keep the
+	// rules they shipped with, so upgrading never breaks a working config.
+	for _, k := range c.Server.APIKeys {
+		p := fmt.Sprintf("api key %q", k.Name)
+		switch {
+		case k.Name == "":
+			errs = append(errs, errors.New("api key: name required"))
+		case len(k.Token) < 16:
+			errs = append(errs, fmt.Errorf("%s: token of >=16 chars required", p))
+		case len(k.Scopes) == 0:
+			errs = append(errs, fmt.Errorf("%s: scopes required", p))
+		}
+	}
+	seenKeys := map[string]bool{}
+	for _, k := range c.Server.Keys() {
+		p := fmt.Sprintf("api key %q", k.Name)
+		if k.Token == "" {
+			errs = append(errs, fmt.Errorf("%s: empty token", p))
+		} else if seenKeys[k.Token] {
+			errs = append(errs, fmt.Errorf("%s: token reused by another key", p))
+		}
+		seenKeys[k.Token] = true
+		for _, sc := range k.Scopes {
+			if !slices.Contains(Scopes, sc) {
+				errs = append(errs, fmt.Errorf("%s: unknown scope %q (have %v)", p, sc, Scopes))
+			}
+		}
+	}
+	if a := c.Server.Auth; a.Header != "" || len(a.Users) > 0 {
+		if a.Header == "" || len(a.TrustedProxies) == 0 {
+			errs = append(errs, errors.New("server.auth: header and trusted_proxies are both required (an untrusted identity header is a login bypass)"))
+		}
+		for _, cidr := range a.TrustedProxies {
+			if _, _, err := net.ParseCIDR(cidr); err != nil {
+				errs = append(errs, fmt.Errorf("server.auth.trusted_proxies: %q is not a CIDR", cidr))
+			}
+		}
+		for _, u := range a.Users {
+			if _, ok := Roles[u.Role]; !ok || u.Email == "" {
+				errs = append(errs, fmt.Errorf("server.auth.users: %q needs email and role viewer|responder|admin", u.Email))
+			}
+		}
+	}
 	if hb := c.Server.Heartbeat; hb.URL != "" && !isURL(hb.URL) {
 		errs = append(errs, errors.New("server.heartbeat.url: invalid url"))
+	}
+
+	for i, e := range c.Escalations {
+		p := fmt.Sprintf("escalation %q", e.Name)
+		if e.Name == "" {
+			errs = append(errs, errors.New("escalation: name required"))
+		}
+		for _, o := range c.Escalations[:i] {
+			if o.Name == e.Name {
+				errs = append(errs, fmt.Errorf("%s: duplicate name", p))
+			}
+		}
+		if len(e.Steps) == 0 {
+			errs = append(errs, fmt.Errorf("%s: needs steps", p))
+		}
+		for j, st := range e.Steps {
+			if j == 0 && st.After != 0 {
+				errs = append(errs, fmt.Errorf("%s: the first step fires immediately (no after)", p))
+			}
+			if j > 0 && st.After <= e.Steps[j-1].After {
+				errs = append(errs, fmt.Errorf("%s: step %d: after must increase", p, j+1))
+			}
+			if len(st.Notify) == 0 {
+				errs = append(errs, fmt.Errorf("%s: step %d: notify required", p, j+1))
+			}
+			for _, n := range st.Notify {
+				if !notifiers[n] {
+					errs = append(errs, fmt.Errorf("%s: unknown notifier %q", p, n))
+				}
+			}
+		}
+	}
+	if c.Server.AckSecret != "" && c.Server.PublicURL == "" {
+		errs = append(errs, errors.New("server.ack_secret needs server.public_url (the links point there)"))
+	}
+	if s := c.Server.AckSecret; s != "" && len(s) < 32 {
+		errs = append(errs, errors.New("server.ack_secret: use >= 32 random characters"))
 	}
 
 	ids, tokens := map[string]bool{}, map[string]bool{}
@@ -411,6 +617,9 @@ func (c *Config) DefaultMonitor(m *Monitor) {
 	if m.Notify == nil {
 		m.Notify = d.Notify
 	}
+	if pol, ok := c.Policy(m.Escalation); ok && len(pol.Steps) > 0 {
+		m.Notify = pol.Steps[0].Notify // the policy decides who hears first
+	}
 	if m.Type == "http" && m.Method == "" {
 		m.Method = "GET"
 	}
@@ -435,9 +644,17 @@ func (c *Config) checkMonitor(m Monitor, notifiers, agents map[string]bool) []er
 		if !strings.Contains(m.Host, ":") {
 			errs = append(errs, fmt.Errorf("%s: host must be host:port", p))
 		}
-	case "dns":
-		if m.Host == "" {
-			errs = append(errs, fmt.Errorf("%s: host required", p))
+	case "dns", "icmp":
+		if _, _, err := net.SplitHostPort(m.Host); m.Host == "" || err == nil {
+			errs = append(errs, fmt.Errorf("%s: host required, without a port", p))
+		}
+	case "redis", "grpc", "kafka", "smtp":
+		if !strings.Contains(m.Host, ":") {
+			errs = append(errs, fmt.Errorf("%s: host must be host:port", p))
+		}
+	case "postgres":
+		if !strings.HasPrefix(m.URL, "postgres://") && !strings.HasPrefix(m.URL, "postgresql://") {
+			errs = append(errs, fmt.Errorf("%s: url must be postgres://user:pass@host:5432/db", p))
 		}
 	case "push":
 		if len(m.Token) < 16 {
@@ -458,6 +675,11 @@ func (c *Config) checkMonitor(m Monitor, notifiers, agents map[string]bool) []er
 			errs = append(errs, fmt.Errorf("%s: unknown notifier %q", p, n))
 		}
 	}
+	if m.Escalation != "" {
+		if _, ok := c.Policy(m.Escalation); !ok {
+			errs = append(errs, fmt.Errorf("%s: unknown escalation %q", p, m.Escalation))
+		}
+	}
 	return errs
 }
 
@@ -474,6 +696,40 @@ func (c *Config) ValidateMonitor(m Monitor) error {
 		return errors.New("monitor: name required")
 	}
 	return errors.Join(c.checkMonitor(m, notifiers, agents)...)
+}
+
+func (c *Config) checkNotifier(n Notifier) error {
+	switch n.Type {
+	case "slack", "webhook", "discord", "teams":
+		if !isURL(n.URL) {
+			return errors.New("valid url required")
+		}
+	case "email":
+		if len(n.To) == 0 {
+			return errors.New("to: at least one recipient")
+		}
+		if c.Server.SMTP.Host == "" {
+			return errors.New("email needs server.smtp")
+		}
+	case "pagerduty":
+		if len(n.RoutingKey) < 20 {
+			return errors.New("routing_key (Events API v2 integration key) required")
+		}
+	case "opsgenie":
+		if n.APIKey == "" {
+			return errors.New("api_key required")
+		}
+		if n.Region != "" && n.Region != "us" && n.Region != "eu" {
+			return errors.New("region must be us or eu")
+		}
+	case "telegram":
+		if n.BotToken == "" || n.ChatID == "" {
+			return errors.New("bot_token and chat_id required")
+		}
+	default:
+		return fmt.Errorf("unknown type %q", n.Type)
+	}
+	return nil
 }
 
 // ApplyLocationDefaults fills Locations ([local]) and Quorum (majority).

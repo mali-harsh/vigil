@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"errors"
 	"fmt"
@@ -50,29 +51,37 @@ func (s *Server) adminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/login", s.loginPage)
 	mux.HandleFunc("POST /admin/login", s.login)
 	mux.HandleFunc("POST /admin/logout", s.logout)
-	mux.Handle("GET /admin", s.adminUI(s.dashboard))
-	mux.Handle("GET /admin/monitors/{id}", s.adminUI(s.monitorPage))
-	mux.Handle("GET /admin/incidents", s.adminUI(s.incidentsPage))
-	mux.Handle("POST /admin/incidents", s.adminUI(s.incidentCreateForm))
-	mux.Handle("POST /admin/incidents/{id}", s.adminUI(s.incidentUpdateForm))
+	mux.Handle("GET /admin", s.ui("read", s.dashboard))
+	mux.Handle("GET /admin/monitors/{id}", s.ui("read", s.monitorPage))
+	mux.Handle("GET /admin/incidents", s.ui("read", s.incidentsPage))
+	mux.Handle("POST /admin/incidents", s.ui("incidents:write", s.incidentCreateForm))
+	mux.Handle("POST /admin/incidents/{id}", s.ui("incidents:write", s.incidentUpdateForm))
+	mux.Handle("POST /admin/incidents/{id}/ack", s.ui("incidents:write", s.incidentAckForm))
+	mux.Handle("POST /admin/notifiers/{name}/test", s.ui("admin", s.notifierTestForm))
 }
 
-func (s *Server) adminUI(h http.HandlerFunc) http.Handler {
+// ui guards admin pages: no credentials → login, wrong role → 403.
+func (s *Server) ui(scope string, h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(s.Cfg.Server.AdminTokens) == 0 {
-			http.Error(w, "admin UI disabled: set server.admin_tokens", http.StatusNotFound)
+		if !s.auth.Enabled() {
+			http.Error(w, "admin UI disabled: configure server.api_keys, admin_tokens or server.auth", http.StatusNotFound)
 			return
 		}
-		if !s.isAdmin(r) {
+		p := s.auth.Principal(r)
+		if p == nil {
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 			return
 		}
-		// Cookie auth + form posts: reject cross-site submissions (CSRF).
+		if !p.Can(scope) {
+			http.Error(w, p.Name+" lacks "+scope+" (ask an admin for a higher role)", http.StatusForbidden)
+			return
+		}
+		// Cookie / SSO auth + form posts: reject cross-site submissions (CSRF).
 		if r.Method == http.MethodPost && !sameOrigin(r) {
 			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 			return
 		}
-		h(w, r)
+		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)))
 	})
 }
 
@@ -85,8 +94,9 @@ func sameOrigin(r *http.Request) bool {
 	return err == nil && u.Host == r.Host
 }
 
-func (s *Server) render(w http.ResponseWriter, name string, data map[string]any) {
+func (s *Server) render(w http.ResponseWriter, r *http.Request, name string, data map[string]any) {
 	data["Title"] = s.Cfg.StatusPage.Title
+	data["Me"] = principalFrom(r.Context())
 	var buf bytes.Buffer
 	if err := adminTmpl.ExecuteTemplate(&buf, name, data); err != nil {
 		s.fail(w, err)
@@ -103,20 +113,24 @@ func (s *Server) render(w http.ResponseWriter, name string, data map[string]any)
 var loginMu sync.Mutex
 
 func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
-	if len(s.Cfg.Server.AdminTokens) == 0 {
-		http.Error(w, "admin UI disabled: set server.admin_tokens", http.StatusNotFound)
+	if !s.auth.Enabled() {
+		http.Error(w, "admin UI disabled: configure server.api_keys, admin_tokens or server.auth", http.StatusNotFound)
 		return
 	}
-	s.render(w, "login", map[string]any{"Error": r.URL.Query().Get("e") != ""})
+	if s.auth.Principal(r) != nil {
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
+	s.render(w, r, "login", map[string]any{"Error": r.URL.Query().Get("e") != "", "SSO": s.auth.SSO()})
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	if len(s.Cfg.Server.AdminTokens) == 0 || !sameOrigin(r) {
+	if !s.auth.Enabled() || !sameOrigin(r) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	tok := r.PostFormValue("token")
-	if !anyMatch(tok, s.Cfg.Server.AdminTokens) {
+	if s.auth.keyFor(tok, nil) == nil {
 		loginMu.Lock()
 		time.Sleep(time.Second)
 		loginMu.Unlock()
@@ -163,7 +177,12 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	s.render(w, "dashboard", map[string]any{"Monitors": ms, "Counts": counts, "Open": len(open), "Agents": s.Engine.Agents(), "Nav": "monitors"})
+	var notifiers []string
+	if s.Notifiers != nil {
+		notifiers = s.Notifiers.Names()
+	}
+	s.render(w, r, "dashboard", map[string]any{"Monitors": ms, "Counts": counts, "Open": len(open), "Agents": s.Engine.Agents(),
+		"Notifiers": notifiers, "Flash": r.URL.Query().Get("flash"), "Nav": "monitors"})
 }
 
 func (s *Server) monitorPage(w http.ResponseWriter, r *http.Request) {
@@ -203,7 +222,7 @@ func (s *Server) monitorPage(w http.ResponseWriter, r *http.Request) {
 	if len(recent) > 50 {
 		recent = recent[:50]
 	}
-	s.render(w, "monitor", map[string]any{"M": mon, "Chart": latencyChart(res), "Recent": recent, "Incidents": incs, "Nav": "monitors"})
+	s.render(w, r, "monitor", map[string]any{"M": mon, "Chart": latencyChart(res), "Recent": recent, "Incidents": incs, "Nav": "monitors"})
 }
 
 type chart struct {
@@ -263,7 +282,7 @@ func (s *Server) incidentsPage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	s.render(w, "incidents", map[string]any{
+	s.render(w, r, "incidents", map[string]any{
 		"Incidents": incs, "Components": comps, "Nav": "incidents",
 		"Error": r.URL.Query().Get("error"), "Statuses": []string{store.Investigating, store.Identified, store.Monitoring, store.Resolved},
 	})
@@ -277,7 +296,7 @@ func (s *Server) incidentCreateForm(w http.ResponseWriter, r *http.Request) {
 	_, err := s.doCreate(r.Context(), createReq{
 		Title: r.PostFormValue("title"), Components: r.PostForm["components"],
 		Impact: r.PostFormValue("impact"), Message: r.PostFormValue("message"),
-	})
+	}, actor(r))
 	redirectResult(w, r, err)
 }
 
@@ -287,7 +306,7 @@ func (s *Server) incidentUpdateForm(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	err = s.doUpdate(r.Context(), id, updateReq{Status: r.PostFormValue("status"), Message: r.PostFormValue("message"), Title: r.PostFormValue("title")})
+	err = s.doUpdate(r.Context(), id, updateReq{Status: r.PostFormValue("status"), Message: r.PostFormValue("message"), Title: r.PostFormValue("title")}, actor(r))
 	redirectResult(w, r, err)
 }
 
@@ -302,3 +321,5 @@ func redirectResult(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }
+
+func urlQueryEscape(s string) string { return url.QueryEscape(s) }

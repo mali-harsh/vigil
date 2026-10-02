@@ -49,20 +49,20 @@ func TestUpdatesAndResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddUpdate(ctx, id, now.Add(time.Minute), store.Identified, "Bad deploy", "API errors after deploy"); err != nil {
+	if err := s.AddUpdate(ctx, id, now.Add(time.Minute), store.Identified, "Bad deploy", "API errors after deploy", "harsh"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddUpdate(ctx, id, now.Add(2*time.Minute), store.Resolved, "Rolled back", ""); err != nil {
+	if err := s.AddUpdate(ctx, id, now.Add(2*time.Minute), store.Resolved, "Rolled back", "", "harsh"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddUpdate(ctx, id, now.Add(3*time.Minute), store.Monitoring, "late", ""); !errors.Is(err, store.ErrResolved) {
+	if err := s.AddUpdate(ctx, id, now.Add(3*time.Minute), store.Monitoring, "late", "", "harsh"); !errors.Is(err, store.ErrResolved) {
 		t.Fatalf("update after resolve: %v", err)
 	}
-	if err := s.AddUpdate(ctx, 999, now, store.Monitoring, "x", ""); !errors.Is(err, store.ErrNotFound) {
+	if err := s.AddUpdate(ctx, 999, now, store.Monitoring, "x", "", "harsh"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("missing incident: %v", err)
 	}
 	inc, _ := s.Incident(ctx, id)
-	if inc.Title != "API errors after deploy" || inc.Status != store.Resolved || inc.ResolvedAt == nil || len(inc.Updates) != 3 || inc.Updates[0].Message != "Rolled back" {
+	if inc.Title != "API errors after deploy" || inc.Status != store.Resolved || inc.ResolvedAt == nil || len(inc.Updates) != 3 || inc.Updates[0].Message != "Rolled back" || inc.Updates[0].Actor != "harsh" {
 		t.Fatalf("got %+v", inc)
 	}
 }
@@ -163,5 +163,39 @@ func TestLeaseRaceHasOneWinner(t *testing.T) {
 	wg.Wait()
 	if winners != 1 {
 		t.Fatalf("%d winners", winners)
+	}
+}
+
+func TestSubscribers(t *testing.T) {
+	s := open(t)
+	ctx := context.Background()
+	sub, confirmed, err := s.AddSubscriber(ctx, "email", " Ops@Example.com ", false)
+	if err != nil || confirmed || sub.Address != "ops@example.com" {
+		t.Fatalf("add: %+v %v %v", sub, confirmed, err)
+	}
+	if subs, _ := s.Subscribers(ctx, true); len(subs) != 0 {
+		t.Fatal("unconfirmed subscriber would receive mail")
+	}
+	again, _, _ := s.AddSubscriber(ctx, "email", "ops@example.com", false)
+	if again.ID != sub.ID || again.Token == sub.Token {
+		t.Fatal("re-subscribing a pending address must reuse the row with a fresh token")
+	}
+	if _, err := s.ConfirmSubscriber(ctx, sub.Token); !errors.Is(err, store.ErrNotFound) {
+		t.Fatal("old token still confirms")
+	}
+	if _, err := s.ConfirmSubscriber(ctx, again.Token); err != nil {
+		t.Fatal(err)
+	}
+	if subs, _ := s.Subscribers(ctx, true); len(subs) != 1 {
+		t.Fatal("confirmed subscriber missing")
+	}
+	if _, confirmed, _ := s.AddSubscriber(ctx, "email", "ops@example.com", false); !confirmed {
+		t.Fatal("confirmed address should report confirmed (no new mail)")
+	}
+	if ok, _ := s.Unsubscribe(ctx, again.Token); !ok {
+		t.Fatal("unsubscribe")
+	}
+	if subs, _ := s.Subscribers(ctx, false); len(subs) != 0 {
+		t.Fatal("still subscribed")
 	}
 }

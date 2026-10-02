@@ -69,6 +69,21 @@ var pgMigrations = []string{
 
 	// 2: the leader's internal URL, so standbys can proxy to it
 	`ALTER TABLE leader_lease ADD COLUMN address TEXT NOT NULL DEFAULT '';`,
+
+	// 3: acknowledgement + escalation progress, actor on updates, subscribers
+	`ALTER TABLE incidents ADD COLUMN acked_at BIGINT;
+	ALTER TABLE incidents ADD COLUMN acked_by TEXT NOT NULL DEFAULT '';
+	ALTER TABLE incidents ADD COLUMN esc_step INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE incident_updates ADD COLUMN actor TEXT NOT NULL DEFAULT '';
+	CREATE TABLE subscribers (
+		id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+		kind         TEXT NOT NULL,
+		address      TEXT NOT NULL,
+		token        TEXT NOT NULL UNIQUE,
+		created_at   BIGINT NOT NULL,
+		confirmed_at BIGINT,
+		UNIQUE (kind, address)
+	);`,
 }
 
 // OpenPostgres connects to a shared Postgres database (DSN or URL).

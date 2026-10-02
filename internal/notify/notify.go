@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +29,7 @@ const (
 	KindAgentOffline Kind = "agent_offline"
 	KindAgentOnline  Kind = "agent_online"
 	KindTest         Kind = "test"
+	KindAcknowledged Kind = "acknowledged"
 )
 
 type Event struct {
@@ -40,10 +43,41 @@ type Event struct {
 	Reason     string    `json:"reason"`
 	IncidentID int64     `json:"incident_id,omitempty"`
 	Downtime   string    `json:"downtime,omitempty"` // set on recovered / reminder
+	AckURL     string    `json:"ack_url,omitempty"`  // signed one-click acknowledge link
+	AckedBy    string    `json:"acked_by,omitempty"`
+	Step       int       `json:"escalation_step,omitempty"` // >0 when sent by an escalation step
+}
+
+// AckURLSet reports whether the event carries an acknowledge link.
+func (e Event) AckURLSet() bool { return e.AckURL != "" }
+
+// DedupKey identifies the alert in incident tools (PagerDuty/Opsgenie), so
+// trigger → acknowledge → resolve all land on the same alert.
+func (e Event) DedupKey() string {
+	switch {
+	case e.Kind == KindAgentOffline || e.Kind == KindAgentOnline:
+		return "vigil:" + strings.ReplaceAll(e.Monitor, " ", ":")
+	case e.IncidentID > 0:
+		return fmt.Sprintf("vigil:%s:incident:%d", e.MonitorID, e.IncidentID)
+	}
+	return "vigil:" + e.MonitorID + ":degraded"
 }
 
 func (e Event) Text() string {
+	t := e.text()
+	if e.Step > 0 {
+		t = fmt.Sprintf("[escalation step %d] %s", e.Step+1, t)
+	}
+	if e.AckURL != "" && (e.Kind == KindDown || e.Kind == KindReminder || e.Kind == KindDegraded) {
+		t += "\nAcknowledge: " + e.AckURL
+	}
+	return t
+}
+
+func (e Event) text() string {
 	switch e.Kind {
+	case KindAcknowledged:
+		return fmt.Sprintf("👀 *%s* incident acknowledged by %s", e.Monitor, e.AckedBy)
 	case KindDown:
 		return fmt.Sprintf("🔴 *%s* is DOWN — %s\n%s", e.Monitor, e.Reason, e.Target)
 	case KindDegraded:
@@ -66,10 +100,30 @@ type Sender interface {
 	Send(ctx context.Context, e Event) error
 }
 
-func NewSender(n config.Notifier, c *http.Client) Sender {
+func NewSender(n config.Notifier, smtpCfg config.SMTP, c *http.Client) Sender {
 	switch n.Type {
 	case "slack":
 		return &postJSON{url: n.URL, client: c, body: func(e Event) any { return map[string]string{"text": e.Text()} }}
+	case "discord":
+		return &postJSON{url: n.URL, client: c, body: func(e Event) any {
+			return map[string]string{"content": strings.ReplaceAll(e.Text(), "*", "**")}
+		}}
+	case "teams": // Teams "Workflows" webhook (the old Office 365 connectors are retired)
+		return &postJSON{url: n.URL, client: c, body: teamsCard}
+	case "telegram":
+		return &postJSON{url: "https://api.telegram.org/bot" + n.BotToken + "/sendMessage", client: c, body: func(e Event) any {
+			return map[string]string{"chat_id": n.ChatID, "text": strings.ReplaceAll(e.Text(), "*", "")}
+		}}
+	case "pagerduty":
+		return &pagerDuty{key: n.RoutingKey, client: c, url: "https://events.pagerduty.com/v2/enqueue"}
+	case "opsgenie":
+		base := "https://api.opsgenie.com"
+		if n.Region == "eu" {
+			base = "https://api.eu.opsgenie.com"
+		}
+		return &opsgenie{key: n.APIKey, base: base, client: c}
+	case "email":
+		return &email{to: n.To, m: NewMailer(smtpCfg)}
 	default:
 		return &postJSON{url: n.URL, client: c, body: func(e Event) any { return e }}
 	}
@@ -139,6 +193,28 @@ func (d *Dispatcher) Run(ctx context.Context, workers int) {
 		}()
 	}
 	d.wg.Wait()
+}
+
+// Names lists configured notifiers.
+func (d *Dispatcher) Names() []string {
+	var out []string
+	for n := range d.senders {
+		out = append(out, n)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// Test sends a test message synchronously and reports the channel's answer
+// (so "does my webhook work?" gets a real yes/no).
+func (d *Dispatcher) Test(ctx context.Context, name string) error {
+	s, ok := d.senders[name]
+	if !ok {
+		return fmt.Errorf("unknown notifier %q", name)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	return s.Send(ctx, Event{Kind: KindTest, Monitor: "vigil test", MonitorID: "test", At: time.Now().UTC(), Reason: "test notification"})
 }
 
 // Close stops accepting events; queued ones are still delivered.

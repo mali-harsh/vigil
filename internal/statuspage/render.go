@@ -42,7 +42,20 @@ func pct(p *float64) string {
 
 // Render writes the HTML page. live adds auto-refresh (the static export
 // relies on its host's caching instead).
-func Render(p *Page, live bool) ([]byte, error) {
+// RenderOptions controls optional page features.
+type RenderOptions struct {
+	Subscribe       bool
+	SubscribeAction string // absolute URL for the static export (served elsewhere)
+}
+
+func Render(p *Page, live bool, opts ...RenderOptions) ([]byte, error) {
+	var o RenderOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	if o.SubscribeAction == "" {
+		o.SubscribeAction = "/subscribe"
+	}
 	loc, err := time.LoadLocation(p.Timezone)
 	if err != nil {
 		loc = time.UTC
@@ -53,7 +66,7 @@ func Render(p *Page, live bool) ([]byte, error) {
 	}
 	t.Funcs(template.FuncMap{"tz": func(t time.Time) string { return t.In(loc).Format("Jan 2, 15:04 MST") }})
 	var buf bytes.Buffer
-	if err := t.Execute(&buf, map[string]any{"P": p, "Live": live}); err != nil {
+	if err := t.Execute(&buf, map[string]any{"P": p, "Live": live, "Subscribe": o.Subscribe, "SubscribeAction": o.SubscribeAction}); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
@@ -107,7 +120,10 @@ func Export(ctx context.Context, b *Builder, dir string, every time.Duration, lo
 			log.Error("export build", "err", err)
 			return
 		}
-		html, err := Render(p, false)
+		html, err := Render(p, false, RenderOptions{
+			Subscribe:       b.Cfg.StatusPage.Subscribe,
+			SubscribeAction: strings.TrimRight(b.Cfg.Server.PublicURL, "/") + "/subscribe", // the export is hosted elsewhere
+		})
 		if err != nil {
 			log.Error("export render", "err", err)
 			return

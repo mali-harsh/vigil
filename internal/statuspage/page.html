@@ -58,6 +58,9 @@ details.group[open]>summary .name::before{transform:rotate(90deg)}
 .mw h3{margin:0;font-size:15px}
 .mw p{margin:4px 0 0;color:var(--muted);font-size:14px}
 .empty{padding:18px 20px;color:var(--muted);font-size:14px}
+.sub{display:flex;gap:8px;padding:16px 20px 8px}.sub input[type=email]{flex:1;min-width:0;font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
+.sub button{font:inherit;font-weight:600;border:0;border-radius:8px;padding:9px 16px;background:var(--fg);color:var(--bg);cursor:pointer}.hp{position:absolute;left:-9999px}
+.subnote{margin:0;padding:0 20px 16px;color:var(--muted);font-size:13px}
 footer{margin-top:40px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
 footer a{color:inherit}
 .axis .d30{display:none}
@@ -100,12 +103,18 @@ footer a{color:inherit}
 {{range .P.Past}}{{template "incident" .}}{{else}}<div class="empty">No incidents reported.</div>{{end}}
 </div></section>
 
+{{if .Subscribe}}<section id="subscribe"><h2>Get updates</h2><div class="card"><form method="post" action="{{.SubscribeAction}}" class="sub">
+<input type="email" name="email" placeholder="you@example.com" required maxlength="254" autocomplete="email" aria-label="Email address">
+<input type="text" name="website" tabindex="-1" autocomplete="off" class="hp" aria-hidden="true">
+<button>Subscribe</button></form><p class="subnote" id="subnote">Email when incidents are posted or resolved. Confirm via the link we send; unsubscribe any time.</p></div></section>{{end}}
+
 <footer><span>Updated {{tz .P.GeneratedAt}}</span><span>Powered by <a href="https://github.com/mali-harsh/vigil">vigil</a></span></footer>
 </main>
 <script>
 (function(){var el=document.getElementById("stale"),g=new Date(el.dataset.generated);
 function check(){if(Date.now()-g.getTime()>5*60*1000){document.getElementById("stale-at").textContent=g.toLocaleString();el.style.display="block"}}
-check();setInterval(check,30000)})();
+check();setInterval(check,30000);
+var q=location.search,n=document.getElementById("subnote");if(n&&q.indexOf("subscribed=1")>=0)n.textContent="📬 Check your inbox to confirm your subscription.";if(n&&q.indexOf("subscribe_error=1")>=0)n.textContent="That email address doesn't look right.";})();
 </script>
 </body></html>
 

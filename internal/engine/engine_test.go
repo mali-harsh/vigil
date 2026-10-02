@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,12 +26,25 @@ import (
 type recorder struct {
 	mu     sync.Mutex
 	events []notify.Event
+	to     [][]string
 }
 
-func (r *recorder) Notify(e notify.Event, _ []string) {
+func (r *recorder) Notify(e notify.Event, to []string) {
 	r.mu.Lock()
 	r.events = append(r.events, e)
+	r.to = append(r.to, to)
 	r.mu.Unlock()
+}
+
+// sent lists "kind→a,b" per notification.
+func (r *recorder) sent() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for i, e := range r.events {
+		out = append(out, string(e.Kind)+"→"+strings.Join(r.to[i], ","))
+	}
+	return out
 }
 
 func (r *recorder) kinds() []notify.Kind {

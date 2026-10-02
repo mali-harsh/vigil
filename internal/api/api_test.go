@@ -178,8 +178,8 @@ func post(t *testing.T, srv *httptest.Server, path, token, body string) (int, st
 func TestManualIncidentLifecycle(t *testing.T) {
 	srv, _ := setup(t, nil)
 	body := `{"title":"Slow uploads","components":["website"],"impact":"degraded","message":"Looking into it"}`
-	if code, _ := post(t, srv, "/api/v1/incidents", "read-token-123", body); code != 401 {
-		t.Fatalf("read token must not write: %d", code)
+	if code, _ := post(t, srv, "/api/v1/incidents", "read-token-123", body); code != 403 {
+		t.Fatalf("read token must not write (403 missing scope): %d", code)
 	}
 	code, resp := post(t, srv, "/api/v1/incidents", "admin-token-123", body)
 	if code != 201 {
@@ -270,7 +270,7 @@ func TestAdminUI(t *testing.T) {
 }
 
 func TestAdminDisabledWithoutTokens(t *testing.T) {
-	srv, _ := setup(t, func(c *config.Config) { c.Server.AdminTokens = nil })
+	srv, _ := setup(t, func(c *config.Config) { c.Server.AdminTokens, c.Server.APITokens = nil, nil })
 	if resp, _ := get(t, srv, "/admin", ""); resp.StatusCode != 404 {
 		t.Fatalf("admin should be disabled: %d", resp.StatusCode)
 	}
