@@ -4,9 +4,18 @@ server:
   data_dir: "./data"
   # api_tokens: ["${VIGIL_API_TOKEN}"]       # protect /api/v1 reads
   # admin_tokens: ["${VIGIL_ADMIN_TOKEN}"]   # enables /admin UI + write API
+  # heartbeat:                               # dead-man's switch: pinged while vigil is healthy
+  #   url: https://hc-ping.com/<uuid>
+  #   interval: 1m
   # tls:                                     # automatic HTTPS (Let's Encrypt)
   #   domains: [status.example.com]
   #   email: ops@example.com
+
+# agents:                     # `vigil agent` in private networks / other regions
+#   - {name: gcp-vpc, token: "${AGENT_GCP_TOKEN}"}
+# discovery:
+#   docker: {enabled: true}   # containers labelled vigil.enable=true
+#   kubernetes: {enabled: true, namespaces: [default]}
 
 status_page:
   title: Example Status
@@ -58,6 +67,7 @@ monitors:
   - name: Postgres
     type: tcp
     host: db.internal:5432
+    # locations: [gcp-vpc]    # run from an agent instead of the server
 
   - name: API certificate
     type: tls

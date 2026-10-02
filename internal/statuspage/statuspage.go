@@ -247,6 +247,9 @@ func leafMonitors(c config.Component) []string {
 }
 
 func publicState(v engine.View) string {
+	if v.Stale {
+		return NoData // every location offline: don't claim "operational" while blind
+	}
 	if v.Maintenance {
 		return Maint
 	}

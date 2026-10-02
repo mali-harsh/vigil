@@ -1,0 +1,9 @@
+apiVersion: v2
+name: vigil
+description: Self-hosted uptime monitoring and status page (server or agent)
+type: application
+version: 0.1.0
+appVersion: "0.2.0"
+home: https://github.com/mali-harsh/vigil
+sources: [https://github.com/mali-harsh/vigil]
+license: MIT

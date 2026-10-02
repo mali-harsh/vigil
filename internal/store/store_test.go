@@ -57,11 +57,11 @@ func TestDailyRollup(t *testing.T) {
 	ctx := context.Background()
 	day := time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
 	for i, st := range []check.Status{check.Up, check.Down, check.Degraded, check.Up} {
-		if err := s.InsertResult(ctx, check.Result{MonitorID: "m", At: day.Add(time.Duration(i) * time.Minute), Status: st}, false); err != nil {
+		if err := s.InsertResult(ctx, check.Result{MonitorID: "m", At: day.Add(time.Duration(i) * time.Minute), Status: st}, "", false); err != nil {
 			t.Fatal(err)
 		}
 	}
-	s.InsertResult(ctx, check.Result{MonitorID: "m", At: day, Status: check.Down}, true) // in maintenance
+	s.InsertResult(ctx, check.Result{MonitorID: "m", At: day, Status: check.Down}, "", true) // in maintenance
 	got, err := s.Daily(ctx, []string{"m"}, "2026-10-01")
 	if err != nil {
 		t.Fatal(err)

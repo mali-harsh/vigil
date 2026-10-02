@@ -26,6 +26,7 @@ const (
 
 type Result struct {
 	MonitorID string
+	Location  string // "local" or agent name; set by whoever ran the probe
 	At        time.Time
 	Status    Status
 	Latency   time.Duration

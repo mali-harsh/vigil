@@ -21,8 +21,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mali-harsh/vigil/internal/check"
 	"github.com/mali-harsh/vigil/internal/config"
 	"github.com/mali-harsh/vigil/internal/engine"
+	"github.com/mali-harsh/vigil/internal/metrics"
 	"github.com/mali-harsh/vigil/internal/statuspage"
 	"github.com/mali-harsh/vigil/internal/store"
 )
@@ -32,11 +34,14 @@ type Beater interface {
 }
 
 type Server struct {
-	Cfg    *config.Config
-	Engine *engine.Engine
-	Store  *store.Store
-	Beater Beater
-	Log    *slog.Logger
+	Cfg     *config.Config
+	Engine  *engine.Engine
+	Store   *store.Store
+	Beater  Beater
+	Results chan<- check.Result // agent results enter the engine here
+	Metrics *metrics.Registry
+	Version string
+	Log     *slog.Logger
 
 	page *statuspage.Builder
 }
@@ -51,6 +56,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("/push/{token}", s.push) // GET/POST/HEAD: whatever the cron job can do
 
+	mux.Handle("GET /metrics", s.read(s.metricsHandler))
+	mux.Handle("GET /api/v1/agents", s.read(s.agents))
 	mux.Handle("GET /api/v1/monitors", s.read(s.monitors))
 	mux.Handle("GET /api/v1/monitors/{id}/results", s.read(s.results))
 	mux.Handle("GET /api/v1/incidents", s.read(s.incidents))
@@ -58,6 +65,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/incidents", s.admin(s.createIncident))
 	mux.Handle("POST /api/v1/incidents/{id}/updates", s.admin(s.addUpdate))
 
+	s.agentRoutes(mux)
 	s.adminRoutes(mux)
 	return securityHeaders(mux)
 }
@@ -149,6 +157,10 @@ func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "db unavailable"})
 		return
 	}
+	if err := s.Engine.Healthy(); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -209,6 +221,53 @@ func (s *Server) badge(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---- read API ----
+
+func (s *Server) agents(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, orEmpty(s.Engine.Agents()))
+}
+
+func (s *Server) metricsHandler(w http.ResponseWriter, r *http.Request) {
+	var g []metrics.Sample
+	add := func(name, help string, l metrics.L, v float64) {
+		g = append(g, metrics.Sample{Name: name, Help: help, Labels: l, Value: v})
+	}
+	add("vigil_build_info", "vigil build.", metrics.L{"version": s.Version}, 1)
+	b := func(c bool) float64 {
+		if c {
+			return 1
+		}
+		return 0
+	}
+	for _, v := range s.Engine.Views() {
+		l := metrics.L{"monitor": v.ID, "type": v.Type, "source": v.Source}
+		add("vigil_monitor_up", "1 if the monitor is up or degraded (service answering), else 0.", l, b(v.State == "up" || v.State == "degraded"))
+		for _, st := range []string{"up", "degraded", "down", "unknown", "paused"} {
+			add("vigil_monitor_state", "Current state, one series per state (1 = current).", metrics.L{"monitor": v.ID, "state": st}, b(string(v.State) == st))
+		}
+		add("vigil_monitor_maintenance", "1 while in a maintenance window.", metrics.L{"monitor": v.ID}, b(v.Maintenance))
+		add("vigil_monitor_state_since_seconds", "Unix time of the last state change.", metrics.L{"monitor": v.ID}, float64(v.Since.Unix()))
+		for _, loc := range v.Locations {
+			if loc.Last == nil {
+				continue
+			}
+			ll := metrics.L{"monitor": v.ID, "location": loc.Name}
+			add("vigil_check_latency_seconds", "Latency of the last probe.", ll, float64(loc.Last.LatencyMS)/1000)
+			add("vigil_check_last_timestamp_seconds", "Unix time of the last probe.", ll, float64(loc.Last.At.Unix()))
+		}
+	}
+	for _, a := range s.Engine.Agents() {
+		add("vigil_agent_up", "1 if the agent has reported recently.", metrics.L{"agent": a.Name}, b(a.Online))
+		add("vigil_agent_last_seen_seconds", "Unix time of the agent's last contact.", metrics.L{"agent": a.Name}, float64(a.LastSeen.Unix()))
+	}
+	open, err := s.Store.OpenIncidents(r.Context())
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	add("vigil_incidents_open", "Open incidents.", nil, float64(len(open)))
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	s.Metrics.Write(w, g)
+}
 
 type monitorOut struct {
 	engine.View

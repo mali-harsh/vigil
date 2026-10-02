@@ -75,7 +75,6 @@ func start(t *testing.T, dbPath string, ms ...config.Monitor) *harness {
 
 func startCfg(t *testing.T, dbPath string, cfg *config.Config) *harness {
 	t.Helper()
-	ms := cfg.Monitors
 	cfg.Server.Retention = config.Duration(time.Hour)
 	st, err := store.Open(dbPath, nil)
 	if err != nil {
@@ -84,16 +83,11 @@ func startCfg(t *testing.T, dbPath string, cfg *config.Config) *harness {
 	ctx, cancel := context.WithCancel(context.Background())
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rec := &recorder{}
-	eng, err := engine.New(ctx, cfg, st, rec, log)
-	if err != nil {
-		t.Fatal(err)
-	}
 	results := make(chan check.Result, 64)
 	sched := scheduler.New(results)
-	for _, m := range ms {
-		if err := sched.Start(ctx, m); err != nil {
-			t.Fatal(err)
-		}
+	eng, err := engine.New(ctx, cfg, st, rec, sched, nil, log) // engine starts the monitors
+	if err != nil {
+		t.Fatal(err)
 	}
 	done := make(chan struct{})
 	go func() { eng.Run(ctx, results); close(done) }()

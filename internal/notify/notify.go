@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mali-harsh/vigil/internal/config"
+	"github.com/mali-harsh/vigil/internal/metrics"
 )
 
 type Kind string
@@ -22,6 +23,10 @@ const (
 	KindDegraded  Kind = "degraded"
 	KindRecovered Kind = "recovered"
 	KindReminder  Kind = "reminder"
+	// agent connectivity — about the monitoring itself, not a service
+	KindAgentOffline Kind = "agent_offline"
+	KindAgentOnline  Kind = "agent_online"
+	KindTest         Kind = "test"
 )
 
 type Event struct {
@@ -45,6 +50,12 @@ func (e Event) Text() string {
 		return fmt.Sprintf("🟡 *%s* is DEGRADED — %s\n%s", e.Monitor, e.Reason, e.Target)
 	case KindRecovered:
 		return fmt.Sprintf("🟢 *%s* RECOVERED (%s → %s) after %s\n%s", e.Monitor, e.From, e.To, e.Downtime, e.Target)
+	case KindAgentOffline:
+		return fmt.Sprintf("⚠️ vigil *%s* is OFFLINE — %s", e.Monitor, e.Reason)
+	case KindAgentOnline:
+		return fmt.Sprintf("✅ vigil *%s* is back online", e.Monitor)
+	case KindTest:
+		return "🔔 vigil test notification — this channel works."
 	case KindReminder:
 		return fmt.Sprintf("🔴 *%s* still %s for %s — %s\n%s", e.Monitor, e.To, e.Downtime, e.Reason, e.Target)
 	}
@@ -102,6 +113,7 @@ type Dispatcher struct {
 	queue   chan job
 	backoff []time.Duration
 	log     *slog.Logger
+	Metrics *metrics.Registry
 	wg      sync.WaitGroup
 }
 
@@ -142,6 +154,7 @@ func (d *Dispatcher) Notify(e Event, to []string) {
 		case d.queue <- job{name, s, e}:
 		default:
 			d.log.Error("notification queue full, dropping", "notifier", name, "monitor", e.MonitorID, "kind", e.Kind)
+			d.Metrics.Inc("vigil_notifications_total", metrics.L{"notifier": name, "result": "dropped"})
 		}
 	}
 }
@@ -159,9 +172,11 @@ func (d *Dispatcher) deliver(ctx context.Context, j job) {
 		cancel()
 		if err == nil {
 			d.log.Info("notified", "notifier", j.name, "monitor", j.event.MonitorID, "kind", j.event.Kind, "attempt", i+1)
+			d.Metrics.Inc("vigil_notifications_total", metrics.L{"notifier": j.name, "result": "sent"})
 			return
 		}
 		d.log.Warn("notify failed", "notifier", j.name, "monitor", j.event.MonitorID, "attempt", i+1, "err", err)
 	}
 	d.log.Error("notification gave up", "notifier", j.name, "monitor", j.event.MonitorID, "kind", j.event.Kind, "err", err)
+	d.Metrics.Inc("vigil_notifications_total", metrics.L{"notifier": j.name, "result": "failed"})
 }

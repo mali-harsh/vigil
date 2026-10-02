@@ -1,0 +1,30 @@
+# vigil server with Docker discovery. Secrets live in .env next to this file:
+#   VIGIL_ADMIN_TOKEN=...   SLACK_WEBHOOK=...
+services:
+  vigil:
+    image: ghcr.io/mali-harsh/vigil:latest
+    restart: unless-stopped
+    ports: ["8080:8080"]       # or 80/443 with server.tls in vigil.yaml
+    env_file: .env
+    volumes:
+      - ./vigil.yaml:/etc/vigil/vigil.yaml:ro
+      - vigil-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # only for discovery.docker
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    # Docker socket access needs the socket's group; find it with: stat -c %g /var/run/docker.sock
+    # group_add: ["999"]
+
+  # Example workload that opts in to monitoring via labels:
+  whoami:
+    image: traefik/whoami
+    labels:
+      vigil.enable: "true"
+      vigil.name: whoami
+      vigil.url: http://whoami:80/health
+      vigil.interval: 30s
+
+volumes:
+  vigil-data:

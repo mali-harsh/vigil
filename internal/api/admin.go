@@ -163,7 +163,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	s.render(w, "dashboard", map[string]any{"Monitors": ms, "Counts": counts, "Open": len(open), "Nav": "monitors"})
+	s.render(w, "dashboard", map[string]any{"Monitors": ms, "Counts": counts, "Open": len(open), "Agents": s.Engine.Agents(), "Nav": "monitors"})
 }
 
 func (s *Server) monitorPage(w http.ResponseWriter, r *http.Request) {

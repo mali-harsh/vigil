@@ -1,0 +1,9 @@
+{{- if eq .Values.mode "server" }}
+vigil server installed.
+  Status page:  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "vigil.name" . }} 8080:{{ .Values.service.port }}  →  http://localhost:8080
+  Admin UI:     /admin (token from your secret's VIGIL_ADMIN_TOKEN)
+  Metrics:      /metrics
+{{- else }}
+vigil agent installed → reporting to {{ .Values.agent.server }}
+  Logs: kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "vigil.name" . }}
+{{- end }}

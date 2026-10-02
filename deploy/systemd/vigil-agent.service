@@ -1,0 +1,22 @@
+# /etc/vigil/agent.env:  VIGIL_SERVER=https://status.example.com
+#                        VIGIL_AGENT_TOKEN=...      (chmod 600)
+[Unit]
+Description=vigil agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+DynamicUser=true
+EnvironmentFile=/etc/vigil/agent.env
+ExecStart=/usr/local/bin/vigil agent
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

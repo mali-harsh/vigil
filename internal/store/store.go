@@ -74,6 +74,12 @@ var migrations = []string{
 	);
 	CREATE INDEX incident_updates_incident ON incident_updates(incident_id);
 	CREATE INDEX incidents_started ON incidents(started_at);`,
+
+	// 3: multi-location. status stays the raw probe result of that location;
+	// eff is the monitor-level (quorum-combined) status uptime is computed from.
+	`ALTER TABLE results ADD COLUMN location TEXT NOT NULL DEFAULT 'local';
+	ALTER TABLE results ADD COLUMN eff TEXT NOT NULL DEFAULT '';
+	UPDATE results SET eff = status;`,
 }
 
 func Open(path string, loc *time.Location) (*Store, error) {
@@ -159,15 +165,23 @@ func (s *Store) SaveState(ctx context.Context, id string, st monitor.State, sinc
 }
 
 // InsertResult stores a raw result and folds it into the daily rollup in one
-// transaction, so the 90-day bars always agree with raw data.
-func (s *Store) InsertResult(ctx context.Context, r check.Result, maint bool) error {
+// transaction, so the 90-day bars always agree with raw data. eff is the
+// monitor-level status at that moment (equal to r.Status for single-location
+// monitors); rollups and uptime count eff.
+func (s *Store) InsertResult(ctx context.Context, r check.Result, eff check.Status, maint bool) error {
+	if r.Location == "" {
+		r.Location = "local"
+	}
+	if eff == "" {
+		eff = r.Status
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO results(monitor_id, at, status, latency_ms, message, maint) VALUES(?,?,?,?,?,?)`,
-		r.MonitorID, ms(r.At), r.Status, r.Latency.Milliseconds(), r.Message, maint); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO results(monitor_id, at, status, latency_ms, message, maint, location, eff) VALUES(?,?,?,?,?,?,?,?)`,
+		r.MonitorID, ms(r.At), r.Status, r.Latency.Milliseconds(), r.Message, maint, r.Location, eff); err != nil {
 		return err
 	}
 	b := func(c bool) int {
@@ -179,14 +193,14 @@ func (s *Store) InsertResult(ctx context.Context, r check.Result, maint bool) er
 	if _, err := tx.ExecContext(ctx, `INSERT INTO daily(monitor_id, day, total, down, degraded, maint) VALUES(?,?,1,?,?,?)
 		ON CONFLICT(monitor_id, day) DO UPDATE SET total=total+1, down=down+excluded.down,
 		degraded=degraded+excluded.degraded, maint=maint+excluded.maint`,
-		r.MonitorID, s.Day(r.At), b(!maint && r.Status == check.Down), b(!maint && r.Status == check.Degraded), b(maint)); err != nil {
+		r.MonitorID, s.Day(r.At), b(!maint && eff == check.Down), b(!maint && eff == check.Degraded), b(maint)); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 func (s *Store) Results(ctx context.Context, id string, since time.Time, limit int) ([]check.Result, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT at, status, latency_ms, message FROM results
+	rows, err := s.db.QueryContext(ctx, `SELECT at, status, latency_ms, message, location FROM results
 		WHERE monitor_id=? AND at>=? ORDER BY at DESC LIMIT ?`, id, ms(since), limit)
 	if err != nil {
 		return nil, err
@@ -196,7 +210,7 @@ func (s *Store) Results(ctx context.Context, id string, since time.Time, limit i
 	for rows.Next() {
 		var at, lat int64
 		r := check.Result{MonitorID: id}
-		if err := rows.Scan(&at, &r.Status, &lat, &r.Message); err != nil {
+		if err := rows.Scan(&at, &r.Status, &lat, &r.Message, &r.Location); err != nil {
 			return nil, err
 		}
 		r.At, r.Latency = fromMS(at), time.Duration(lat)*time.Millisecond
@@ -210,12 +224,23 @@ func (s *Store) Results(ctx context.Context, id string, since time.Time, limit i
 // data — never report 100% for a monitor that has not run.
 func (s *Store) Uptime(ctx context.Context, id string, since time.Time) (pct float64, ok bool, err error) {
 	var total, good int64
-	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(status!='down'),0) FROM results
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(eff!='down'),0) FROM results
 		WHERE monitor_id=? AND at>=? AND maint=0`, id, ms(since)).Scan(&total, &good)
 	if err != nil || total == 0 {
 		return 0, false, err
 	}
 	return float64(good) * 100 / float64(total), true, nil
+}
+
+// LastUp returns the time of the most recent UP result of a monitor (zero if
+// none) — used to resume heartbeat deadlines across restarts.
+func (s *Store) LastUp(ctx context.Context, id string) (time.Time, error) {
+	var at sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT MAX(at) FROM results WHERE monitor_id=? AND status='up'`, id).Scan(&at)
+	if err != nil || !at.Valid {
+		return time.Time{}, err
+	}
+	return fromMS(at.Int64), nil
 }
 
 type DayStat struct {

@@ -1,0 +1,59 @@
+# server: the monitor + status page (SQLite on a PVC → exactly 1 replica)
+# agent:  runs checks inside this cluster/VPC and reports to a server (outbound only)
+mode: server
+
+image:
+  repository: ghcr.io/mali-harsh/vigil
+  tag: ""            # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+# Secrets are referenced as ${ENV} in the config and injected from a Secret:
+#   kubectl create secret generic vigil-secrets --from-literal=SLACK_WEBHOOK=... --from-literal=VIGIL_ADMIN_TOKEN=...
+existingSecret: ""   # name of a Secret whose keys become env vars
+
+# --- server mode ---
+config: |
+  server:
+    listen: ":8080"
+    data_dir: /data
+    admin_tokens: ["${VIGIL_ADMIN_TOKEN}"]
+  status_page:
+    title: Status
+  monitors:
+    - name: Example
+      type: http
+      url: https://example.com
+
+persistence:
+  size: 1Gi
+  storageClass: ""   # cluster default
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []          # [status.example.com]
+  tls: []            # [{secretName: status-tls, hosts: [status.example.com]}]
+
+# Kubernetes discovery (Services annotated vigil.dev/enable: "true").
+# Also set discovery.kubernetes.enabled: true in `config`.
+discovery:
+  rbac: false        # create ServiceAccount + ClusterRole (get/list services)
+
+# --- agent mode ---
+agent:
+  server: ""         # https://status.example.com
+  tokenKey: VIGIL_AGENT_TOKEN   # key inside existingSecret
+  replicas: 1        # >1 = duplicate results from the same location; keep 1
+
+resources:
+  requests: {cpu: 20m, memory: 32Mi}
+  limits: {memory: 128Mi}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

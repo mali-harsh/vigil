@@ -6,6 +6,7 @@ package config
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/url"
@@ -36,17 +37,20 @@ type Config struct {
 	Notifiers   []Notifier    `yaml:"notifiers"`
 	Monitors    []Monitor     `yaml:"monitors"`
 	StatusPage  StatusPage    `yaml:"status_page"`
+	Agents      []Agent       `yaml:"agents"`
+	Discovery   Discovery     `yaml:"discovery"`
 	Maintenance []Maintenance `yaml:"maintenance"`
 }
 
 type Server struct {
-	Listen      string   `yaml:"listen"`
-	DataDir     string   `yaml:"data_dir"`
-	PublicURL   string   `yaml:"public_url"`
-	APITokens   []string `yaml:"api_tokens"`   // read-only bearer tokens; empty = read API open
-	AdminTokens []string `yaml:"admin_tokens"` // admin UI + write API; empty = admin disabled
-	Retention   Duration `yaml:"retention"`    // raw check results
-	TLS         TLS      `yaml:"tls"`
+	Listen      string    `yaml:"listen"`
+	DataDir     string    `yaml:"data_dir"`
+	PublicURL   string    `yaml:"public_url"`
+	APITokens   []string  `yaml:"api_tokens"`   // read-only bearer tokens; empty = read API open
+	AdminTokens []string  `yaml:"admin_tokens"` // admin UI + write API; empty = admin disabled
+	Retention   Duration  `yaml:"retention"`    // raw check results
+	Heartbeat   Heartbeat `yaml:"heartbeat"`    // dead-man's switch: vigil pings this while healthy
+	TLS         TLS       `yaml:"tls"`
 }
 
 // TLS enables automatic HTTPS via Let's Encrypt. vigil then serves :443 and
@@ -96,6 +100,45 @@ type Monitor struct {
 	RecoverThreshold int      `yaml:"recover_threshold"`
 	ReminderEvery    Duration `yaml:"reminder_every"`
 	Notify           []string `yaml:"notify"`
+
+	// Where the check runs: "local" (this server) and/or agent names.
+	// With several locations the monitor is DOWN only when at least Quorum
+	// of them confirm it (default: majority).
+	Locations []string `yaml:"locations"`
+	Quorum    int      `yaml:"quorum"`
+
+	Source string `yaml:"-"` // "config", "docker", "kubernetes"
+}
+
+// LocalLocation is the vigil server itself.
+const LocalLocation = "local"
+
+type Agent struct {
+	Name   string   `yaml:"name"`
+	Token  string   `yaml:"token"`
+	Notify []string `yaml:"notify"` // who hears "agent offline"; default: defaults.notify
+}
+
+type Heartbeat struct {
+	URL      string   `yaml:"url"`
+	Interval Duration `yaml:"interval"`
+}
+
+type Discovery struct {
+	Docker     DockerDiscovery `yaml:"docker"`
+	Kubernetes KubeDiscovery   `yaml:"kubernetes"`
+}
+
+type DockerDiscovery struct {
+	Enabled  bool     `yaml:"enabled"`
+	Socket   string   `yaml:"socket"` // default /var/run/docker.sock
+	Interval Duration `yaml:"interval"`
+}
+
+type KubeDiscovery struct {
+	Enabled    bool     `yaml:"enabled"`
+	Namespaces []string `yaml:"namespaces"` // empty = all (needs cluster-wide RBAC)
+	Interval   Duration `yaml:"interval"`
 }
 
 type Expect struct {
@@ -183,6 +226,24 @@ func (c *Config) applyDefaults() {
 		s.Retention = Duration(30 * 24 * time.Hour)
 	}
 	c.applyStatusPageDefaults()
+	if c.Server.Heartbeat.URL != "" && c.Server.Heartbeat.Interval == 0 {
+		c.Server.Heartbeat.Interval = Duration(time.Minute)
+	}
+	dd := &c.Discovery
+	if dd.Docker.Socket == "" {
+		dd.Docker.Socket = "/var/run/docker.sock"
+	}
+	if dd.Docker.Interval == 0 {
+		dd.Docker.Interval = Duration(30 * time.Second)
+	}
+	if dd.Kubernetes.Interval == 0 {
+		dd.Kubernetes.Interval = Duration(30 * time.Second)
+	}
+	for i := range c.Agents {
+		if c.Agents[i].Notify == nil {
+			c.Agents[i].Notify = c.Defaults.Notify
+		}
+	}
 	d := &c.Defaults
 	if d.Interval == 0 {
 		d.Interval = Duration(60 * time.Second)
@@ -200,40 +261,7 @@ func (c *Config) applyDefaults() {
 		d.ReminderEvery = Duration(30 * time.Minute)
 	}
 	for i := range c.Monitors {
-		m := &c.Monitors[i]
-		if m.ID == "" {
-			m.ID = Slug(m.Name)
-		}
-		if m.Interval == 0 {
-			m.Interval = d.Interval
-		}
-		if m.Timeout == 0 {
-			m.Timeout = d.Timeout
-		}
-		if m.FailThreshold == 0 {
-			m.FailThreshold = d.FailThreshold
-			if m.Type == "push" {
-				m.FailThreshold = 1 // grace already is the tolerance
-			}
-		}
-		if m.RecoverThreshold == 0 {
-			m.RecoverThreshold = d.RecoverThreshold
-			if m.Type == "push" {
-				m.RecoverThreshold = 1
-			}
-		}
-		if m.ReminderEvery == 0 {
-			m.ReminderEvery = d.ReminderEvery
-		}
-		if m.Notify == nil {
-			m.Notify = d.Notify
-		}
-		if m.Type == "http" && m.Method == "" {
-			m.Method = "GET"
-		}
-		if m.Type == "push" && m.Grace == 0 {
-			m.Grace = Duration(m.Interval.D() / 2)
-		}
+		c.DefaultMonitor(&c.Monitors[i])
 	}
 }
 
@@ -260,6 +288,37 @@ func (c *Config) validate() error {
 		notifiers[n.Name] = true
 	}
 
+	agents := map[string]bool{}
+	for _, a := range c.Agents {
+		p := fmt.Sprintf("agent %q", a.Name)
+		switch {
+		case a.Name == "" || Slug(a.Name) != a.Name:
+			errs = append(errs, fmt.Errorf("%s: name must be lowercase letters, digits and dashes", p))
+		case a.Name == LocalLocation:
+			errs = append(errs, fmt.Errorf("%s: %q is reserved for the server itself", p, LocalLocation))
+		case agents[a.Name]:
+			errs = append(errs, fmt.Errorf("%s: duplicate name", p))
+		case len(a.Token) < 24:
+			errs = append(errs, fmt.Errorf("%s: token of >=24 chars required", p))
+		}
+		agents[a.Name] = true
+		for _, n := range a.Notify {
+			if !notifiers[n] {
+				errs = append(errs, fmt.Errorf("%s: unknown notifier %q", p, n))
+			}
+		}
+	}
+	for i, a := range c.Agents {
+		for _, b := range c.Agents[i+1:] {
+			if a.Token == b.Token {
+				errs = append(errs, fmt.Errorf("agents %q and %q share a token", a.Name, b.Name))
+			}
+		}
+	}
+	if hb := c.Server.Heartbeat; hb.URL != "" && !isURL(hb.URL) {
+		errs = append(errs, errors.New("server.heartbeat.url: invalid url"))
+	}
+
 	ids, tokens := map[string]bool{}, map[string]bool{}
 	for _, m := range c.Monitors {
 		p := fmt.Sprintf("monitor %q", m.Name)
@@ -271,46 +330,158 @@ func (c *Config) validate() error {
 			errs = append(errs, fmt.Errorf("%s: duplicate id %q", p, m.ID))
 		}
 		ids[m.ID] = true
-		switch m.Type {
-		case "http":
-			if !isURL(m.URL) {
-				errs = append(errs, fmt.Errorf("%s: valid url required", p))
-			}
-		case "tcp", "tls":
-			if !strings.Contains(m.Host, ":") {
-				errs = append(errs, fmt.Errorf("%s: host must be host:port", p))
-			}
-		case "dns":
-			if m.Host == "" {
-				errs = append(errs, fmt.Errorf("%s: host required", p))
-			}
-		case "push":
-			if len(m.Token) < 16 {
-				errs = append(errs, fmt.Errorf("%s: token of >=16 chars required (it is the secret in the ping URL)", p))
-			}
+		errs = append(errs, c.checkMonitor(m, notifiers, agents)...)
+		if m.Type == "push" {
 			if tokens[m.Token] {
 				errs = append(errs, fmt.Errorf("%s: duplicate token", p))
 			}
 			tokens[m.Token] = true
-		default:
-			errs = append(errs, fmt.Errorf("%s: unknown type %q", p, m.Type))
-		}
-		if m.Type != "push" && m.Timeout >= m.Interval {
-			errs = append(errs, fmt.Errorf("%s: timeout must be shorter than interval", p))
-		}
-		if m.Interval.D() < time.Second {
-			errs = append(errs, fmt.Errorf("%s: interval must be >= 1s", p))
-		}
-		for _, n := range m.Notify {
-			if !notifiers[n] {
-				errs = append(errs, fmt.Errorf("%s: unknown notifier %q", p, n))
-			}
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// DefaultMonitor fills unset fields from defaults (also used for discovered
+// monitors, so they behave exactly like configured ones).
+func (c *Config) DefaultMonitor(m *Monitor) {
+	d := c.Defaults
+	if m.ID == "" {
+		m.ID = Slug(m.Name)
+	}
+	if m.Interval == 0 {
+		m.Interval = d.Interval
+	}
+	if m.Timeout == 0 {
+		m.Timeout = d.Timeout
+	}
+	if m.FailThreshold == 0 {
+		m.FailThreshold = d.FailThreshold
+		if m.Type == "push" {
+			m.FailThreshold = 1 // grace already is the tolerance
+		}
+	}
+	if m.RecoverThreshold == 0 {
+		m.RecoverThreshold = d.RecoverThreshold
+		if m.Type == "push" {
+			m.RecoverThreshold = 1
+		}
+	}
+	if m.ReminderEvery == 0 {
+		m.ReminderEvery = d.ReminderEvery
+	}
+	if m.Notify == nil {
+		m.Notify = d.Notify
+	}
+	if m.Type == "http" && m.Method == "" {
+		m.Method = "GET"
+	}
+	if m.Type == "push" && m.Grace == 0 {
+		m.Grace = Duration(m.Interval.D() / 2)
+	}
+	m.ApplyLocationDefaults()
+	if m.Source == "" {
+		m.Source = "config"
+	}
+}
+
+func (c *Config) checkMonitor(m Monitor, notifiers, agents map[string]bool) []error {
+	p := fmt.Sprintf("monitor %q", m.Name)
+	var errs []error
+	switch m.Type {
+	case "http":
+		if !isURL(m.URL) {
+			errs = append(errs, fmt.Errorf("%s: valid url required", p))
+		}
+	case "tcp", "tls":
+		if !strings.Contains(m.Host, ":") {
+			errs = append(errs, fmt.Errorf("%s: host must be host:port", p))
+		}
+	case "dns":
+		if m.Host == "" {
+			errs = append(errs, fmt.Errorf("%s: host required", p))
+		}
+	case "push":
+		if len(m.Token) < 16 {
+			errs = append(errs, fmt.Errorf("%s: token of >=16 chars required (it is the secret in the ping URL)", p))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("%s: unknown type %q", p, m.Type))
+	}
+	errs = append(errs, m.validateLocations(agents)...)
+	if m.Type != "push" && m.Timeout >= m.Interval {
+		errs = append(errs, fmt.Errorf("%s: timeout must be shorter than interval", p))
+	}
+	if m.Interval.D() < time.Second {
+		errs = append(errs, fmt.Errorf("%s: interval must be >= 1s", p))
+	}
+	for _, n := range m.Notify {
+		if !notifiers[n] {
+			errs = append(errs, fmt.Errorf("%s: unknown notifier %q", p, n))
+		}
+	}
+	return errs
+}
+
+// ValidateMonitor checks a single (discovered) monitor against this config.
+func (c *Config) ValidateMonitor(m Monitor) error {
+	notifiers, agents := map[string]bool{}, map[string]bool{}
+	for _, n := range c.Notifiers {
+		notifiers[n.Name] = true
+	}
+	for _, a := range c.Agents {
+		agents[a.Name] = true
+	}
+	if m.Name == "" || m.ID == "" {
+		return errors.New("monitor: name required")
+	}
+	return errors.Join(c.checkMonitor(m, notifiers, agents)...)
+}
+
+// ApplyLocationDefaults fills Locations ([local]) and Quorum (majority).
+func (m *Monitor) ApplyLocationDefaults() {
+	if len(m.Locations) == 0 {
+		m.Locations = []string{LocalLocation}
+	}
+	if m.Quorum == 0 {
+		m.Quorum = len(m.Locations)/2 + 1
+	}
+}
+
+func (m Monitor) validateLocations(agents map[string]bool) []error {
+	p := fmt.Sprintf("monitor %q", m.Name)
+	var errs []error
+	seen := map[string]bool{}
+	for _, l := range m.Locations {
+		if l != LocalLocation && !agents[l] {
+			errs = append(errs, fmt.Errorf("%s: unknown location %q (use %q or an agent name)", p, l, LocalLocation))
+		}
+		if seen[l] {
+			errs = append(errs, fmt.Errorf("%s: duplicate location %q", p, l))
+		}
+		seen[l] = true
+	}
+	if m.Type == "push" && (len(m.Locations) != 1 || m.Locations[0] != LocalLocation) {
+		errs = append(errs, fmt.Errorf("%s: push monitors are received by the server; locations must be [local]", p))
+	}
+	if m.Quorum < 1 || m.Quorum > len(m.Locations) {
+		errs = append(errs, fmt.Errorf("%s: quorum must be between 1 and %d", p, len(m.Locations)))
+	}
+	return errs
+}
+
+// AgentByToken returns the agent owning token, if any.
+func (c *Config) AgentByToken(token string) (Agent, bool) {
+	for _, a := range c.Agents {
+		if subtleEq(a.Token, token) {
+			return a, true
+		}
+	}
+	return Agent{}, false
 }
 
 func isURL(s string) bool {
 	u, err := url.Parse(s)
 	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }
+
+func subtleEq(a, b string) bool { return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1 }

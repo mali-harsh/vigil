@@ -17,6 +17,7 @@ import (
 	"github.com/mali-harsh/vigil/internal/check"
 	"github.com/mali-harsh/vigil/internal/config"
 	"github.com/mali-harsh/vigil/internal/engine"
+	"github.com/mali-harsh/vigil/internal/metrics"
 	"github.com/mali-harsh/vigil/internal/monitor"
 	"github.com/mali-harsh/vigil/internal/notify"
 	"github.com/mali-harsh/vigil/internal/statuspage"
@@ -73,17 +74,17 @@ monitors:
 		if s == monitor.Down {
 			status = check.Down
 		}
-		st.InsertResult(ctx, check.Result{MonitorID: id, At: now, Status: status, Message: "dial tcp 10.0.0.9: connection refused"}, false)
+		st.InsertResult(ctx, check.Result{MonitorID: id, At: now, Status: status, Message: "dial tcp 10.0.0.9: connection refused"}, "", false)
 	}
 	st.OpenIncident(ctx, store.NewIncident{MonitorID: "api", Title: "API outage", Components: []string{"api"}, At: now, Cause: "secret probe error", Message: "Investigating"})
 	st.OpenIncident(ctx, store.NewIncident{MonitorID: "private-db", Title: "private-db outage", At: now, Cause: "secret db error", Message: "x"})
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	eng, err := engine.New(ctx, cfg, st, nopNotifier{}, log)
+	eng, err := engine.New(ctx, cfg, st, nopNotifier{}, nil, nil, log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer((&Server{Cfg: cfg, Engine: eng, Store: st, Beater: nopBeater{}, Log: log}).Handler())
+	srv := httptest.NewServer((&Server{Cfg: cfg, Engine: eng, Store: st, Beater: nopBeater{}, Results: make(chan check.Result, 100), Metrics: metrics.New(), Log: log}).Handler())
 	t.Cleanup(func() { srv.Close(); st.Close() })
 	return srv, st
 }
